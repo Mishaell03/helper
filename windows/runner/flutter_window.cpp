@@ -1,5 +1,6 @@
 #include "flutter_window.h"
 
+#include <iostream>
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
@@ -12,6 +13,16 @@ FlutterWindow::~FlutterWindow() {}
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
+  }
+
+  // Apply to the top-level HWND before it can be shown. Supported capture APIs
+  // omit this window on Windows 10 2004+; older Windows may show a black area.
+  // Use the numeric value so builds with older Windows SDKs still compile.
+  constexpr DWORD kExcludeFromCapture = 0x00000011;  // WDA_EXCLUDEFROMCAPTURE
+  if (!SetWindowDisplayAffinity(GetHandle(), kExcludeFromCapture)) {
+    const DWORD error = GetLastError();
+    std::cerr << "Could not exclude Helper from screen capture. Win32 error: "
+              << error << std::endl;
   }
 
   RECT frame = GetClientArea();
