@@ -37,6 +37,8 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  background_manager_ = std::make_unique<BackgroundManager>(
+      GetHandle(), flutter_controller_->engine()->messenger());
 
   // Dart configures transparency, the frameless style and always-on-top before
   // window_manager shows the window. Do not show a decorated window here.
@@ -48,6 +50,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  background_manager_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -58,7 +61,12 @@ void FlutterWindow::OnDestroy() {
 LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
-                              LPARAM const lparam) noexcept {
+                               LPARAM const lparam) noexcept {
+  // Handle close before plugins: X/Alt+F4 must hide, not destroy the engine.
+  if (background_manager_ &&
+      background_manager_->HandleMessage(message, wparam, lparam)) {
+    return 0;
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
