@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart' as acrylic;
 import 'package:window_manager/window_manager.dart';
+import 'background_service.dart';
+import 'hotkey_settings.dart';
 
 bool get isWindows =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
@@ -36,8 +38,7 @@ Future<void> main() async {
 
   if (isWindows) {
     await WidgetsBinding.instance.waitUntilFirstFrameRasterized;
-    await windowManager.show();
-    await windowManager.focus();
+    await BackgroundService.instance.show();
   }
 }
 
@@ -89,6 +90,47 @@ class _MyHomePageState extends State<MyHomePage> {
   int _counter = 0;
 
   @override
+  void initState() {
+    super.initState();
+    if (isWindows) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _checkHotkeys());
+    }
+  }
+
+  Future<void> _checkHotkeys() async {
+    try {
+      final settings = await BackgroundService.instance.getSettings();
+      if (mounted && (!settings.active || settings.warning.isNotEmpty)) {
+        await _settings();
+      }
+    } catch (error) {
+      _showError(error);
+    }
+  }
+
+  void _showError(Object error) {
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  Future<void> _command(Future<void> Function() command) async {
+    try {
+      await command();
+    } catch (error) {
+      _showError(error);
+    }
+  }
+
+  Future<void> _settings() => showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const HotkeySettings(),
+  );
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Padding(
@@ -111,14 +153,36 @@ class _MyHomePageState extends State<MyHomePage> {
                     ),
                   ),
                   if (isWindows) ...[
+                    PopupMenuButton<String>(
+                      tooltip: 'Application menu',
+                      onSelected: (value) {
+                        if (value == 'settings') {
+                          _settings();
+                        } else {
+                          _command(BackgroundService.instance.exit);
+                        }
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(
+                          value: 'settings',
+                          child: Text('Hotkey Settings'),
+                        ),
+                        PopupMenuItem(
+                          value: 'exit',
+                          child: Text('Exit application'),
+                        ),
+                      ],
+                    ),
                     IconButton(
-                      tooltip: 'Свернуть',
-                      onPressed: () => windowManager.minimize(),
+                      tooltip: 'Скрыть в фон',
+                      onPressed: () =>
+                          _command(BackgroundService.instance.hide),
                       icon: const Icon(Icons.remove),
                     ),
                     IconButton(
-                      tooltip: 'Закрыть',
-                      onPressed: () => windowManager.close(),
+                      tooltip: 'Закрыть (скрыть в фон)',
+                      onPressed: () =>
+                          _command(BackgroundService.instance.hide),
                       icon: const Icon(Icons.close),
                     ),
                     const SizedBox(width: 8),
