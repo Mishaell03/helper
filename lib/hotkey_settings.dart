@@ -50,12 +50,13 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     }
   }
 
-  Future<void> _save({bool defaults = false}) async {
+  Future<void> _restoreDefaults() async {
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final settings = await _service.save(
-        defaults ? Hotkey.defaultToggle : _toggle,
-        defaults ? Hotkey.defaultExit : _exit,
+        Hotkey.defaultToggle,
+        Hotkey.defaultExit,
       );
       if (!mounted) return;
       setState(() {
@@ -71,25 +72,26 @@ class _HotkeySettingsState extends State<HotkeySettings> {
   }
 
   Future<void> _record(bool toggle) async {
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       // Existing registered shortcuts are recorded through WM_HOTKEY instead
       // of performing their action. Other combinations use Flutter key events.
       await _service.setRecording(true);
       if (!mounted) return;
-      final hotkey = await showDialog<Hotkey>(
+      final settings = await showDialog<BackgroundSettings>(
         context: context,
         barrierDismissible: false,
-        builder: (_) => const _Recorder(),
+        builder: (_) => _Recorder(
+          onSave: (hotkey) =>
+              _service.save(toggle ? hotkey : _toggle, toggle ? _exit : hotkey),
+        ),
       );
-      if (mounted && hotkey != null) {
+      if (mounted && settings != null) {
         setState(() {
-          if (toggle) {
-            _toggle = hotkey;
-          } else {
-            _exit = hotkey;
-          }
-          _message = 'Есть несохранённые изменения. Нажмите «Сохранить».';
+          _toggle = settings.toggle;
+          _exit = settings.exit;
+          _message = 'Сохранено. Глобальные горячие клавиши действуют.';
         });
       }
     } catch (error) {
@@ -105,6 +107,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
   }
 
   Future<void> _setAutostart(bool enabled) async {
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final settings = await _service.setAutostart(enabled);
@@ -150,13 +153,14 @@ class _HotkeySettingsState extends State<HotkeySettings> {
             const SizedBox(height: 16),
             const Text(
               'Нажмите на сочетание, чтобы записать новое: Ctrl, Alt, Shift '
-              'или Win и другая клавиша. Доступность проверяется при сохранении. '
+              'или Win и другая клавиша. Кнопка «Сохранить» в диалоге сразу '
+              'проверяет и применяет сочетание. '
               'Некоторые сочетания зарезервированы Windows. '
               'Кнопка закрытия главного окна только скрывает приложение.',
             ),
             const SizedBox(height: 12),
             TextButton(
-              onPressed: _busy ? null : () => _save(defaults: true),
+              onPressed: _busy ? null : _restoreDefaults,
               child: const Text('Восстановить настройки по умолчанию'),
             ),
           ],
@@ -180,20 +184,10 @@ class _HotkeySettingsState extends State<HotkeySettings> {
         ],
       ),
     );
-    final save = FilledButton(
-      onPressed: _busy ? null : () => _save(),
-      child: const Text('Сохранить'),
-    );
     if (widget.embedded) {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: Column(
-          children: [
-            Expanded(child: content),
-            if (!widget.preferencesOnly)
-              Align(alignment: Alignment.centerRight, child: save),
-          ],
-        ),
+        child: content,
       );
     }
     return PopScope(
@@ -207,7 +201,6 @@ class _HotkeySettingsState extends State<HotkeySettings> {
             onPressed: _busy ? null : () => Navigator.pop(context),
             child: const Text('Закрыть'),
           ),
-          save,
         ],
       ),
     );
@@ -215,7 +208,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
 }
 
 class _Recorder extends StatefulWidget {
-  const _Recorder();
+  const _Recorder({required this.onSave});
+
+  final Future<BackgroundSettings> Function(Hotkey) onSave;
 
   @override
   State<_Recorder> createState() => _RecorderState();
@@ -225,6 +220,7 @@ class _RecorderState extends State<_Recorder> {
   final _focus = FocusNode();
   Hotkey? _hotkey;
   String? _error;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -233,11 +229,30 @@ class _RecorderState extends State<_Recorder> {
   }
 
   void _accept(Hotkey key) {
-    if (!mounted) return;
+    if (!mounted || _saving) return;
     setState(() {
       _hotkey = key.modifiers == 0 ? null : key;
       _error = key.modifiers == 0 ? 'Добавьте Ctrl, Alt, Shift или Win.' : null;
     });
+  }
+
+  Future<void> _save() async {
+    if (_hotkey == null || _saving) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final settings = await widget.onSave(_hotkey!);
+      if (mounted) Navigator.pop(context, settings);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _error = backgroundError(error);
+        });
+      }
+    }
   }
 
   @override
@@ -248,36 +263,44 @@ class _RecorderState extends State<_Recorder> {
   }
 
   @override
-  Widget build(BuildContext context) => Focus(
-    focusNode: _focus,
-    autofocus: true,
-    onKeyEvent: (_, event) {
-      if (event.logicalKey == LogicalKeyboardKey.escape) {
-        if (event is KeyDownEvent) Navigator.pop(context);
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_saving,
+    child: Focus(
+      focusNode: _focus,
+      autofocus: true,
+      onKeyEvent: (_, event) {
+        if (_saving) return KeyEventResult.handled;
+        if (event.logicalKey == LogicalKeyboardKey.escape) {
+          if (event is KeyDownEvent) Navigator.pop(context);
+          return KeyEventResult.handled;
+        }
+        final key = Hotkey.fromEvent(event);
+        if (key != null) _accept(key);
+        // Prevent Tab/Space/Enter from activating dialog controls while recording.
         return KeyEventResult.handled;
-      }
-      final key = Hotkey.fromEvent(event);
-      if (key != null) _accept(key);
-      // Prevent Tab/Space/Enter from activating dialog controls while recording.
-      return KeyEventResult.handled;
-    },
-    child: AlertDialog(
-      title: const Text('Нажмите сочетание клавиш'),
-      content: Text(
-        _error ?? _hotkey?.label ?? 'Ожидание нажатия… Esc — отмена',
+      },
+      child: AlertDialog(
+        title: const Text('Нажмите сочетание клавиш'),
+        scrollable: true,
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_hotkey?.label ?? 'Ожидание нажатия… Esc — отмена'),
+            if (_error != null) ...[const SizedBox(height: 8), Text(_error!)],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: _saving ? null : () => Navigator.pop(context),
+            child: const Text('Отмена'),
+          ),
+          OutlinedButton(
+            onPressed: _hotkey == null || _saving ? null : _save,
+            child: Text(_saving ? 'Сохранение…' : 'Сохранить'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Отмена'),
-        ),
-        FilledButton(
-          onPressed: _hotkey == null
-              ? null
-              : () => Navigator.pop(context, _hotkey),
-          child: const Text('Использовать'),
-        ),
-      ],
     ),
   );
 }

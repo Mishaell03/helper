@@ -7,6 +7,7 @@ import 'background_service.dart';
 import 'markdown/markdown_controller.dart';
 import 'markdown/markdown_panel.dart';
 import 'platform.dart';
+import 'panel_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,29 +60,7 @@ class MyApp extends StatelessWidget {
     supportedLocales: const [Locale('ru')],
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      fontFamily: 'Segoe UI',
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xFF8792A4),
-        brightness: Brightness.dark,
-      ),
-      scaffoldBackgroundColor: Colors.transparent,
-      splashFactory: InkRipple.splashFactory,
-      dialogTheme: DialogThemeData(
-        backgroundColor: const Color(0xE6242424),
-        surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-      popupMenuTheme: PopupMenuThemeData(
-        color: const Color(0xF02C2C2C),
-        surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-      snackBarTheme: const SnackBarThemeData(
-        backgroundColor: Color(0xEE303030),
-        contentTextStyle: TextStyle(color: Colors.white, fontSize: 12),
-      ),
-    ),
+    theme: buildPanelTheme(),
     home: MarkdownPanel(controller: controller, pickFiles: pickFiles),
   );
 }

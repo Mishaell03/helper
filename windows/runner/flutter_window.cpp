@@ -56,6 +56,26 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                                LPARAM const lparam) noexcept {
+  // Keep the real system cursor as an arrow on resize borders and during the
+  // native move/size loop. Capture exclusion does not hide cursor-shape changes
+  // from OBS. Flutter border MouseRegions also request the ordinary arrow.
+  if (message == WM_ENTERSIZEMOVE) {
+    in_move_size_loop_ = true;
+    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+  } else if (message == WM_EXITSIZEMOVE) {
+    in_move_size_loop_ = false;
+    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+  } else if (message == WM_SIZING) {
+    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+  } else if (message == WM_SETCURSOR) {
+    const int hit_test = static_cast<int>(LOWORD(lparam));
+    if (in_move_size_loop_ ||
+        (hit_test >= HTLEFT && hit_test <= HTBOTTOMRIGHT)) {
+      SetCursor(LoadCursor(nullptr, IDC_ARROW));
+      return TRUE;
+    }
+  }
+
   // Handle close before plugins: X/Alt+F4 must hide, not destroy the engine.
   if (background_manager_ &&
       background_manager_->HandleMessage(message, wparam, lparam)) {

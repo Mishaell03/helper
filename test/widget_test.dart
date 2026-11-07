@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/background_service.dart';
 import 'package:helper/main.dart';
+import 'package:helper/panel_theme.dart';
 import 'package:helper/markdown/markdown_controller.dart';
 import 'package:helper/markdown/markdown_repository.dart';
 
@@ -392,4 +393,84 @@ void main() {
     expect(controller.files, isEmpty);
     expect(controller.blocks, isEmpty);
   });
+
+  testWidgets(
+    'Подсказки, уведомления и диалоги используют тот же полупрозрачный фон',
+    (tester) async {
+      final input = await file(tester, 'оформление.md', '# Карточка\n\nТекст');
+      await open(tester, paths: [input.path]);
+      final theme = Theme.of(tester.element(find.byType(Scaffold)));
+      expect(theme.snackBarTheme.backgroundColor, PanelStyle.surface);
+      expect(theme.popupMenuTheme.color, PanelStyle.surface);
+      expect(theme.dialogTheme.backgroundColor, PanelStyle.surface);
+      expect(theme.dialogTheme.barrierColor, Colors.transparent);
+      final tooltipDecoration = theme.tooltipTheme.decoration! as BoxDecoration;
+      expect(tooltipDecoration.color, PanelStyle.surface);
+      expect(theme.tooltipTheme.textStyle!.color, Colors.white);
+      expect(PanelStyle.surface.a, 0.5);
+
+      tester
+          .state<TooltipState>(
+            find.byWidgetPredicate(
+              (widget) => widget is Tooltip && widget.message == 'Настройки',
+            ),
+          )
+          .ensureTooltipVisible();
+      await tester.pumpAndSettle();
+      expect(find.text('Настройки'), findsOneWidget);
+      expect(
+        tester
+            .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+            .any(
+              (box) =>
+                  box.decoration is BoxDecoration &&
+                  (box.decoration as BoxDecoration).color == PanelStyle.surface,
+            ),
+        isTrue,
+      );
+      Tooltip.dismissAllToolTips();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await settle(tester);
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(
+        tester
+            .widgetList<Material>(
+              find.descendant(
+                of: find.byType(SnackBar),
+                matching: find.byType(Material),
+              ),
+            )
+            .any(
+              (material) =>
+                  material.color == PanelStyle.surface &&
+                  material.elevation == 0,
+            ),
+        isTrue,
+      );
+      await tester.tap(find.text('Закрыть'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Очистить'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widgetList<Material>(
+              find.descendant(
+                of: find.byType(AlertDialog),
+                matching: find.byType(Material),
+              ),
+            )
+            .any(
+              (material) =>
+                  material.color == PanelStyle.surface &&
+                  material.elevation == 0,
+            ),
+        isTrue,
+      );
+      await tester.tap(find.text('Отмена'));
+      await tester.pumpAndSettle();
+    },
+  );
 }

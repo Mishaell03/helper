@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -15,6 +17,7 @@ void main() {
   var autostartFailure = false;
   var recording = false;
   var saves = 0;
+  Completer<void>? saveGate;
 
   Map<String, Object> state() => {
     'toggle': toggle.toMap(),
@@ -33,6 +36,7 @@ void main() {
     autostartFailure = false;
     recording = false;
     saves = 0;
+    saveGate = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           switch (call.method) {
@@ -44,6 +48,7 @@ void main() {
               return null;
             case 'saveSettings':
               saves++;
+              if (saveGate != null) await saveGate!.future;
               if (conflict) {
                 throw PlatformException(
                   code: 'hotkey_error',
@@ -112,15 +117,27 @@ void main() {
     expect(find.text('Ctrl + Shift + F4'), findsOneWidget);
     expect(find.text('Запускать вместе с Windows'), findsOneWidget);
     expect(find.text('Hotkey Settings'), findsNothing);
+    expect(find.text('Сохранить'), findsNothing);
+    expect(find.byType(FilledButton), findsNothing);
   });
 
   testWidgets('Сохранение и конфликт отображаются по-русски', (tester) async {
     await open(tester);
+    await tester.tap(find.text('Ctrl + Shift + F12'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f8);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
     conflict = true;
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
     expect(find.text('Сочетание занято. Выберите другое.'), findsOneWidget);
     expect(toggle.sameAs(Hotkey.defaultToggle), isTrue);
+    expect(find.text('Нажмите сочетание клавиш'), findsOneWidget);
+    expect(recording, isTrue);
     conflict = false;
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
@@ -128,6 +145,10 @@ void main() {
       find.text('Сохранено. Глобальные горячие клавиши действуют.'),
       findsOneWidget,
     );
+    expect(toggle.sameAs(const Hotkey(6, 0x77)), isTrue);
+    expect(recording, isFalse);
+    expect(find.text('Нажмите сочетание клавиш'), findsNothing);
+    expect(find.text('Сохранить'), findsNothing);
   });
 
   testWidgets('Восстановление значений по умолчанию применяется сразу', (
@@ -186,12 +207,12 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await tester.pump();
     expect(find.text('Ctrl + Shift + F8'), findsOneWidget);
-    await tester.tap(find.text('Использовать'));
-    await tester.pumpAndSettle();
-    expect(recording, isFalse);
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
+    expect(recording, isFalse);
     expect(toggle.sameAs(const Hotkey(6, 0x77)), isTrue);
+    expect(saves, 1);
+    expect(find.text('Сохранить'), findsNothing);
   });
 
   testWidgets('Запись поддерживает Alt и Win; отмена оставляет назначения', (
@@ -245,8 +266,6 @@ void main() {
       (_) {},
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Использовать'));
-    await tester.pumpAndSettle();
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
     expect(
@@ -254,6 +273,52 @@ void main() {
       findsOneWidget,
     );
     expect(saves, 0);
+    expect(recording, isTrue);
+    expect(exit.sameAs(Hotkey.defaultExit), isTrue);
+    await tester.tap(find.text('Отмена'));
+    await tester.pumpAndSettle();
     expect(recording, isFalse);
   });
+
+  testWidgets(
+    'Во время сохранения нельзя отправить повторный запрос или закрыть запись через Esc',
+    (tester) async {
+      await open(tester);
+      await tester.tap(find.text('Ctrl + Shift + F12'));
+      await tester.pumpAndSettle();
+      ServicesBinding.instance.channelBuffers.push(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('recorded', {'modifiers': 6, 'key': 0x77}),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
+      final gate = saveGate = Completer<void>();
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      await tester.tap(find.text('Сохранить'));
+      await tester.pumpAndSettle();
+      expect(saves, 1);
+      expect(find.text('Сохранение…'), findsOneWidget);
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.widgetWithText(OutlinedButton, 'Сохранение…'),
+            )
+            .onPressed,
+        isNull,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.text('Нажмите сочетание клавиш'), findsOneWidget);
+      gate.complete();
+      await tester.pumpAndSettle();
+      expect(saves, 1);
+      expect(recording, isFalse);
+      expect(toggle.sameAs(const Hotkey(6, 0x77)), isTrue);
+      expect(find.text('Сохранить'), findsNothing);
+    },
+  );
 }

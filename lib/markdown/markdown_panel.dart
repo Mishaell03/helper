@@ -7,6 +7,8 @@ import 'package:window_manager/window_manager.dart';
 import '../background_service.dart';
 import '../hotkey_settings.dart';
 import '../platform.dart';
+import '../panel_theme.dart';
+import '../window_resize_border.dart';
 import 'block_card.dart';
 import 'markdown_controller.dart';
 import 'markdown_repository.dart';
@@ -367,11 +369,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         child: Padding(
           padding: const EdgeInsets.all(4),
           child: Material(
-            color: const Color(0xFF202020).withValues(alpha: 0.5),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-            ),
+            color: PanelStyle.surface,
+            shape: PanelStyle.shape,
             clipBehavior: Clip.antiAlias,
             child: Column(
               children: [
@@ -401,7 +400,14 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         ),
       ),
     );
-    return isWindows ? DragToResizeArea(child: panel) : panel;
+    return isWindows
+        ? WindowResizeBorder(
+            onResize: (edge) => _run(() => windowManager.startResizing(edge)),
+            onVerticalMaximize: () =>
+                _run(() => windowManager.maximize(vertically: true)),
+            child: panel,
+          )
+        : panel;
   }
 
   Widget _windowHandle() => SizedBox(

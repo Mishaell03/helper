@@ -32,6 +32,7 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<BackgroundManager> background_manager_;
   bool start_hidden_ = false;
+  bool in_move_size_loop_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
