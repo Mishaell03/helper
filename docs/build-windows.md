@@ -8,8 +8,10 @@
    Добавьте `flutter\bin` в `PATH`, затем откройте новый терминал.
 2. **Visual Studio 2022** (не VS Code) с компонентом **«Разработка классических
    приложений на C++ / Desktop development with C++»**, MSVC x64, Windows SDK и CMake.
-3. **Inno Setup 6.3 или новее**: <https://jrsoftware.org/isdl.php>.
-   Обычная установка в Program Files обнаруживается автоматически.
+3. **Inno Setup 6.3 или новее (включая 7)**: <https://jrsoftware.org/isdl.php>.
+   Обычная установка в Program Files обнаруживается автоматически; если установлено
+   несколько версий, выбирается каталог с наибольшим номером. Скрипт читает версию
+   из вывода ISCC, а не полагается на FileVersion (он может быть `0.0.0.0`).
 
 Проверка окружения: `flutter doctor -v`. Для загрузки Flutter-зависимостей при первой
 сборке нужен интернет. Скрипт не устанавливает инструменты сам и не требует администратора.
@@ -71,6 +73,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tool\build_windows_install
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tool\build_windows_installer.ps1 -Version 1.1.0 -BuildNumber 2 -InnoCompiler "D:\Inno Setup 6\ISCC.exe"
 ```
+
+Для вашего пути Inno Setup 7 также подходит:
+
+```powershell
+.\build-installer.cmd -InnoCompiler "C:\Program Files\Inno Setup 7\ISCC.exe"
+```
+
+Если ISCC не сообщает версию ни в справке, ни в метаданных, скрипт выдаёт
+предупреждение, но не отклоняет компилятор как устаревший: совместимость проверит
+сама компиляция установщика. Определённые старые версии до 6.3 отклоняются.
 
 `-SkipTests` пропускает анализатор/тесты, но не компиляцию. Не рекомендуется перед
 публикацией. Повторная успешная сборка той же версии заменяет три файла в её папке;

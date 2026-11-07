@@ -22,13 +22,53 @@ function Find-InnoCompiler {
   }
   $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
   if ($command) { return $command.Source }
-  foreach ($folder in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+  $candidates = @()
+  foreach ($folder in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
     if ($folder) {
-      $candidate = Join-Path $folder 'Inno Setup 6\ISCC.exe'
-      if (Test-Path -LiteralPath $candidate) { return $candidate }
+      $candidates += @(Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match '^Inno Setup \d+$' } |
+          ForEach-Object {
+            $candidate = Join-Path $_.FullName 'ISCC.exe'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+              [pscustomobject]@{ Path = $candidate; Major = [int]($_.Name -replace '^Inno Setup ', '') }
+            }
+          })
     }
   }
+  if ($candidates.Count -gt 0) { return ($candidates | Sort-Object Major -Descending | Select-Object -First 1).Path }
   throw 'Install Inno Setup 6.3 or newer, or pass -InnoCompiler "C:\path\ISCC.exe". https://jrsoftware.org/isdl.php'
+}
+
+function Test-InnoVersion([string]$Compiler) {
+  # Some ISCC builds (including Inno Setup 7) have FileVersion 0.0.0.0.
+  # Ask the actual compiler instead; /? may return a non-zero help exit code.
+  $savedPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $banner = (& $Compiler '/?' 2>&1 | Out-String)
+  } finally { $ErrorActionPreference = $savedPreference }
+  $versionMatch = [regex]::Match($banner, '(?i)Inno Setup\s+(\d+)\.(\d+)(?:\.\d+)?')
+  if ($versionMatch.Success) {
+    $major = [int]$versionMatch.Groups[1].Value
+    $minor = [int]$versionMatch.Groups[2].Value
+  } else {
+    $metadata = (Get-Item -LiteralPath $Compiler).VersionInfo
+    $major = $metadata.FileMajorPart
+    $minor = $metadata.FileMinorPart
+    $majorMatch = [regex]::Match($banner, '(?i)Inno Setup\s+(\d+)\b')
+    # A major-only banner is sufficient for 7+, but not for distinguishing
+    # Inno Setup 6.0 from 6.3. Unknown 6.x falls back to the actual compilation.
+    if ($majorMatch.Success -and [int]$majorMatch.Groups[1].Value -ge 7) {
+      $major = [int]$majorMatch.Groups[1].Value
+      $minor = 0
+    }
+  }
+  if ($major -eq 0) {
+    Write-Warning 'ISCC version is not reported. Continuing; the installer compilation will validate support for the required features.'
+  } elseif ($major -lt 6 -or ($major -eq 6 -and $minor -lt 3)) {
+    throw "Inno Setup 6.3 or newer is required (detected $major.$minor). Compiler: $Compiler"
+  }
+  Write-Host "Inno Setup compiler: $Compiler"
 }
 
 function Find-VcRuntime {
@@ -62,10 +102,7 @@ try {
   $flutter = Get-Command flutter -ErrorAction SilentlyContinue
   if (-not $flutter) { throw 'Flutter was not found in PATH. Install Flutter SDK, add its bin directory to PATH and reopen the terminal.' }
   $iscc = Find-InnoCompiler
-  $innoVersion = (Get-Item -LiteralPath $iscc).VersionInfo
-  if ($innoVersion.FileMajorPart -lt 6 -or ($innoVersion.FileMajorPart -eq 6 -and $innoVersion.FileMinorPart -lt 3)) {
-    throw 'Inno Setup 6.3 or newer is required.'
-  }
+  Test-InnoVersion $iscc
   $runtime = Find-VcRuntime
   $pubspec = Get-Content -LiteralPath (Join-Path $root 'pubspec.yaml') -Raw
   $match = [regex]::Match($pubspec, '(?m)^version:\s*(\d+\.\d+\.\d+)(?:\+(\d+))?\s*(?:#.*)?$')
