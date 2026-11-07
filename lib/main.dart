@@ -13,7 +13,6 @@ import 'automation/text_automation.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  BackgroundSettings? startup;
 
   if (isWindows) {
     await windowManager.ensureInitialized();
@@ -38,14 +37,14 @@ Future<void> main() async {
       color: Colors.transparent,
     );
     await windowManager.setAlwaysOnTop(true);
-    startup = await BackgroundService.instance.prepareWindow();
+    await BackgroundService.instance.prepareWindow();
   }
 
   runApp(const MyApp());
 
   if (isWindows) {
     await WidgetsBinding.instance.waitUntilFirstFrameRasterized;
-    if (!startup!.startHidden) await BackgroundService.instance.show();
+    await BackgroundService.instance.finishStartup();
   }
 }
 

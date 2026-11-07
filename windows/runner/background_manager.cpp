@@ -35,7 +35,7 @@ std::string WinError(const char* operation, DWORD error) {
 BackgroundManager::BackgroundManager(HWND window,
                                      flutter::BinaryMessenger* messenger,
                                      bool start_hidden)
-    : window_(window), start_hidden_(start_hidden) {
+    : window_(window), visibility_(start_hidden), start_hidden_(start_hidden) {
   placement_.length = sizeof(placement_);
   ApplyStyles();
   std::array<Shortcut, kActionCount> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
@@ -182,6 +182,14 @@ BackgroundManager::BackgroundManager(HWND window,
       result->Success(State());
     } else if (method == "pickMarkdownFiles") {
       PickMarkdownFiles(std::move(result));
+    } else if (method == "finishStartup") {
+      // Make the final presentation decision natively, once. --background
+      // never reveals itself; a hotkey pressed during bootstrap takes priority.
+      if (visibility_.FinishStartup() && !Show()) {
+        result->Error("window_style_error", startup_error_);
+      } else {
+        result->Success();
+      }
     } else if (method == "hide") {
       Hide();
       result->Success();
@@ -359,6 +367,7 @@ bool BackgroundManager::ApplyStyles() {
 }
 
 void BackgroundManager::Hide() {
+  visibility_.Hide();
   if (hidden_) return;
   GetWindowPlacement(window_, &placement_);
   if (prepared_) SaveSize();
@@ -370,6 +379,7 @@ void BackgroundManager::Hide() {
 bool BackgroundManager::Show() {
   if (!ApplyStyles()) return false;
   ExcludeFromCapture(window_);
+  visibility_.Reveal();
   if (hidden_) {
     SetWindowPlacement(window_, &placement_);
     hidden_ = false;
@@ -395,6 +405,7 @@ HWND BackgroundManager::ImportDialogWindow() const {
 bool BackgroundManager::ShowCountdownInactive() {
   if (import_dialog_ || !ApplyStyles()) return false;
   ExcludeFromCapture(window_);
+  visibility_.Reveal();
   // Unlike normal Show(), this must NOT activate Helper or steal the external
   // editor's focus when Start/Resume was requested by a global hotkey.
   ShowWindow(window_, IsIconic(window_) ? SW_SHOWNOACTIVATE : SW_SHOWNA);
@@ -580,6 +591,13 @@ void BackgroundManager::SaveSize() {
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_WINDOWPOSCHANGING && lparam && !visibility_.may_show()) {
+    // Defend against plugin/window-initialization requests showing or focusing
+    // an autostarted window before an explicit reveal action.
+    auto* position = reinterpret_cast<WINDOWPOS*>(lparam);
+    position->flags &= ~static_cast<UINT>(SWP_SHOWWINDOW);
+    position->flags |= SWP_NOACTIVATE;
+  }
   if (automation_ && automation_->HandleMessage(message, wparam)) return true;
   if (message == WM_ENDSESSION && wparam != 0) automation_->Stop(false);
   if (message == WM_GETMINMAXINFO) {

@@ -34,6 +34,11 @@ jobs:
           cl /std:c++17 /EHsc /W4 /WX test/native/typing_cadence_test.cpp /Fe:typing_cadence_test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./typing_cadence_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /std:c++17 /EHsc /W4 /WX test/native/startup_visibility_test.cpp /Fe:startup_visibility_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./startup_visibility_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build release packages
         shell: pwsh
         run: |

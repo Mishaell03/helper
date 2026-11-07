@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include "text_automation.h"
+#include "startup_visibility.h"
 
 // Also used by a second launch to activate the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
@@ -57,6 +58,7 @@ class BackgroundManager {
   HWND ImportDialogWindow() const;
 
   HWND window_;
+  StartupVisibility visibility_;
   WINDOWPLACEMENT placement_{};
   bool hidden_ = false;
   bool recording_ = false;

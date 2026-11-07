@@ -91,6 +91,21 @@ function Wait-For([scriptblock]$Condition, [string]$Failure) {
     }
 }
 
+function Assert-StaysHidden([int]$Milliseconds) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($Milliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($app.HasExited) { throw 'Background process exited unexpectedly.' }
+        $window = [HelperWinTest]::WindowFor($app.Id)
+        if ($window -ne [IntPtr]::Zero -and [HelperWinTest]::IsWindowVisible($window)) {
+            throw 'Background launch revealed the window without a hotkey.'
+        }
+        if ([HelperWinTest]::GetForegroundWindow() -ne $probe) {
+            throw 'Background initialization stole focus from the other window.'
+        }
+        Start-Sleep -Milliseconds 10
+    }
+}
+
 $app = $null
 $probe = [IntPtr]::Zero
 try {
@@ -131,19 +146,23 @@ try {
     [HelperWinTest]::Shortcut(0x73)
     if (-not $app.WaitForExit(10000)) { throw 'Ctrl+Shift+F4 did not exit Helper.' }
 
+    [void][HelperWinTest]::SetForegroundWindow($probe)
     $app = Start-Process $Executable -ArgumentList '--background' -PassThru
+    # Observe initialization, not only the settled state three seconds later.
+    Assert-StaysHidden 5000
     Wait-For {
         $script:hwnd = [HelperWinTest]::WindowFor($app.Id)
         $script:hwnd -ne [IntPtr]::Zero
     } 'Background startup did not create a native window.'
-    Start-Sleep -Seconds 3
-    if ([HelperWinTest]::IsWindowVisible($script:hwnd)) { throw 'Background startup showed the window.' }
+    $backgroundSecond = Start-Process $Executable -ArgumentList '--background' -PassThru
+    if (-not $backgroundSecond.WaitForExit(10000)) { throw 'Second background instance remained alive.' }
+    Assert-StaysHidden 2000
     [void][HelperWinTest]::SetForegroundWindow($probe)
     [HelperWinTest]::Shortcut(0x7b)
     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not show the background-started window.'
     [HelperWinTest]::Shortcut(0x73)
     if (-not $app.WaitForExit(10000)) { throw 'Background-started application did not exit.' }
-    Write-Output 'PASS: native launch, styles, global toggle/exit, close-to-hide, single instance and background launch.'
+    Write-Output 'PASS: native launch, styles, global toggle/exit, close-to-hide, single instance, hidden background initialization and no focus stealing.'
     Write-Output 'Manual checks are still required: Task View/Alt+Tab/taskbar, OBS focus, resizing, logon autostart, persistence and conflicts.'
 } finally {
     if ($probe -ne [IntPtr]::Zero) { [void][HelperWinTest]::DestroyWindow($probe) }

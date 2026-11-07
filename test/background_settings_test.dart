@@ -20,6 +20,7 @@ void main() {
   var autostartFailure = false;
   var recording = false;
   var saves = 0;
+  final visibilityCalls = <String>[];
   Completer<void>? saveGate;
 
   Map<String, Object> state() => {
@@ -45,10 +46,15 @@ void main() {
     autostartFailure = false;
     recording = false;
     saves = 0;
+    visibilityCalls.clear();
     saveGate = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           switch (call.method) {
+            case 'finishStartup':
+            case 'show':
+              visibilityCalls.add(call.method);
+              return null;
             case 'getSettings':
             case 'prepareWindow':
               return state();
@@ -117,6 +123,14 @@ void main() {
     expect(Hotkey.defaultPause.label, 'Ctrl + Shift + F7');
     expect(Hotkey.defaultStop.label, 'Ctrl + Shift + F8');
   });
+
+  test(
+    'Завершение запуска передаёт решение Windows, не вызывает Show из Dart',
+    () async {
+      await BackgroundService.instance.finishStartup();
+      expect(visibilityCalls, ['finishStartup']);
+    },
+  );
 
   test('Одинаковые сочетания и отсутствие модификаторов отклоняются', () async {
     final service = BackgroundService.instance;
