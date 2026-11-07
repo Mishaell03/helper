@@ -19,6 +19,9 @@ OutputBaseFilename=helper-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\windows\runner\resources\app_icon.ico
+WizardImageFile=branding\wizard.bmp
+WizardSmallImageFile=branding\wizard-small.bmp
 UninstallDisplayIcon={app}\helper.exe
 CloseApplications=yes
 RestartApplications=no
@@ -31,8 +34,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Helper"; Filename: "{app}\helper.exe"
-Name: "{group}\Uninstall Helper"; Filename: "{uninstallexe}"
+Name: "{group}\Helper"; Filename: "{app}\helper.exe"; IconFilename: "{app}\helper.exe"
+Name: "{group}\Uninstall Helper"; Filename: "{uninstallexe}"; IconFilename: "{app}\helper.exe"
 
 [Run]
 Filename: "{app}\helper.exe"; Description: "Start Helper"; Flags: nowait postinstall skipifsilent

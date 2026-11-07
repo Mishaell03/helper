@@ -1021,6 +1021,21 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           label: const Text('Выйти из приложения'),
         ),
       ],
+      const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12),
+        child: Row(
+          children: [
+            Image(
+              image: AssetImage('assets/branding/logo.png'),
+              width: 48,
+              height: 48,
+              semanticLabel: 'Логотип Helper',
+            ),
+            SizedBox(width: 8),
+            Text('Helper', style: TextStyle(color: Colors.white60)),
+          ],
+        ),
+      ),
     ],
   );
 }

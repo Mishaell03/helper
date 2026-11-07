@@ -1,5 +1,7 @@
 # helper
 
+<img src="assets/branding/logo.png" alt="Helper" width="128">
+
 Прозрачное фоновое Flutter-приложение для Windows с интерфейсом на русском языке.
 
 ## Markdown-помощник
