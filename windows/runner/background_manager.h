@@ -5,6 +5,8 @@
 #include <flutter/binary_messenger.h>
 #include <flutter/encodable_value.h>
 #include <flutter/method_channel.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
 
 #include <array>
 #include <memory>
@@ -15,7 +17,8 @@ constexpr UINT kShowHelper = WM_APP + 42;
 
 class BackgroundManager {
  public:
-  BackgroundManager(HWND window, flutter::BinaryMessenger* messenger);
+  BackgroundManager(HWND window, flutter::BinaryMessenger* messenger,
+                    bool start_hidden);
   ~BackgroundManager();
   bool HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
 
@@ -39,13 +42,24 @@ class BackgroundManager {
   bool Valid(const Shortcut& shortcut) const;
   Value State() const;
   void Hide();
-  void Show();
-  void ApplyStyles();
+  bool Show();
+  bool ApplyStyles();
+  bool SetAutostart(bool enabled, std::string* error);
+  void LoadAutostart();
+  void RestoreSize();
+  void SaveSize();
+  void PickMarkdownFiles(std::unique_ptr<flutter::MethodResult<Value>> result);
+  HWND ImportDialogWindow() const;
 
   HWND window_;
   WINDOWPLACEMENT placement_{};
   bool hidden_ = false;
   bool recording_ = false;
+  bool start_hidden_ = false;
+  bool autostart_ = false;
+  bool prepared_ = false;
+  bool exit_requested_ = false;
+  Microsoft::WRL::ComPtr<IFileOpenDialog> import_dialog_;
   std::array<Binding, 2> bindings_{};
   std::string startup_error_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;

@@ -7,7 +7,7 @@ class Hotkey {
       Hotkey(map['modifiers'] as int, map['key'] as int);
 
   static const defaultToggle = Hotkey(6, 0x7b);
-  static const defaultExit = Hotkey(6, 0x7a);
+  static const defaultExit = Hotkey(6, 0x73);
   final int modifiers; // Win32 MOD_ALT=1, CONTROL=2, SHIFT=4, WIN=8.
   final int key; // Win32 virtual key, not a Flutter key ID.
 
@@ -28,34 +28,34 @@ class Hotkey {
     } else if ((key >= 0x41 && key <= 0x5a) || (key >= 0x30 && key <= 0x39)) {
       name = String.fromCharCode(key);
     } else if (key >= 0x60 && key <= 0x69) {
-      name = 'Numpad ${key - 0x60}';
+      name = 'Цифр. ${key - 0x60}';
     } else {
       name = _keyNames[key];
     }
-    parts.add(name ?? 'VK 0x${key.toRadixString(16)}');
+    parts.add(name ?? 'Клавиша 0x${key.toRadixString(16)}');
     return parts.join(' + ');
   }
 
   static const _keyNames = <int, String>{
-    8: 'Backspace',
-    9: 'Tab',
-    13: 'Enter',
-    32: 'Space',
-    33: 'Page Up',
-    34: 'Page Down',
-    35: 'End',
-    36: 'Home',
-    37: 'Left',
-    38: 'Up',
-    39: 'Right',
-    40: 'Down',
-    45: 'Insert',
-    46: 'Delete',
-    106: 'Numpad *',
-    107: 'Numpad +',
-    109: 'Numpad -',
-    110: 'Numpad .',
-    111: 'Numpad /',
+    8: 'Забой',
+    9: 'Табуляция',
+    13: 'Ввод',
+    32: 'Пробел',
+    33: 'Страница вверх',
+    34: 'Страница вниз',
+    35: 'Конец',
+    36: 'Начало',
+    37: '←',
+    38: '↑',
+    39: '→',
+    40: '↓',
+    45: 'Вставка',
+    46: 'Удаление',
+    106: 'Цифр. *',
+    107: 'Цифр. +',
+    109: 'Цифр. -',
+    110: 'Цифр. .',
+    111: 'Цифр. /',
     186: ';',
     187: '=',
     188: ',',
@@ -141,12 +141,16 @@ class BackgroundSettings {
     : toggle = Hotkey.fromMap(map['toggle'] as Map<Object?, Object?>),
       exit = Hotkey.fromMap(map['exit'] as Map<Object?, Object?>),
       active = map['active'] as bool,
-      warning = map['warning'] as String;
+      warning = map['warning'] as String,
+      autostart = map['autostart'] as bool,
+      startHidden = map['startHidden'] as bool;
 
   final Hotkey toggle;
   final Hotkey exit;
   final bool active;
   final String warning;
+  final bool autostart;
+  final bool startHidden;
 }
 
 class BackgroundService {
@@ -156,6 +160,8 @@ class BackgroundService {
         onRecorded?.call(
           Hotkey.fromMap(call.arguments as Map<Object?, Object?>),
         );
+      } else if (call.method == 'warning') {
+        onWarning?.call(call.arguments as String);
       }
     });
   }
@@ -163,6 +169,7 @@ class BackgroundService {
   static final instance = BackgroundService._();
   static const _channel = MethodChannel('helper/background');
   void Function(Hotkey)? onRecorded;
+  void Function(String)? onWarning;
 
   Future<BackgroundSettings> getSettings() async => BackgroundSettings.fromMap(
     (await _channel.invokeMapMethod<Object?, Object?>('getSettings'))!,
@@ -170,10 +177,12 @@ class BackgroundService {
 
   Future<BackgroundSettings> save(Hotkey toggle, Hotkey exit) async {
     if (toggle.modifiers == 0 || exit.modifiers == 0) {
-      throw const FormatException('Use at least one modifier key.');
+      throw const FormatException('Добавьте Ctrl, Alt, Shift или Win.');
     }
     if (toggle.sameAs(exit)) {
-      throw const FormatException('The two shortcuts must be different.');
+      throw const FormatException(
+        'Для двух действий нужны разные сочетания клавиш.',
+      );
     }
     return BackgroundSettings.fromMap(
       (await _channel.invokeMapMethod<Object?, Object?>('saveSettings', {
@@ -185,7 +194,39 @@ class BackgroundService {
 
   Future<void> setRecording(bool enabled) =>
       _channel.invokeMethod<void>('setRecording', enabled);
+  Future<BackgroundSettings> prepareWindow() async =>
+      BackgroundSettings.fromMap(
+        (await _channel.invokeMapMethod<Object?, Object?>('prepareWindow'))!,
+      );
+  Future<BackgroundSettings> setAutostart(bool enabled) async =>
+      BackgroundSettings.fromMap(
+        (await _channel.invokeMapMethod<Object?, Object?>(
+          'setAutostart',
+          enabled,
+        ))!,
+      );
   Future<void> hide() => _channel.invokeMethod<void>('hide');
   Future<void> show() => _channel.invokeMethod<void>('show');
   Future<void> exit() => _channel.invokeMethod<void>('exit');
+  Future<List<String>> pickMarkdownFiles() async =>
+      (await _channel.invokeListMethod<String>('pickMarkdownFiles')) ?? [];
+  Future<String> storageDirectory() async =>
+      (await _channel.invokeMethod<String>('getStorageDirectory'))!;
+}
+
+String backgroundError(Object error) {
+  if (error is FormatException) return error.message;
+  if (error is PlatformException &&
+      const {
+        'invalid_hotkey',
+        'hotkey_error',
+        'invalid_argument',
+        'autostart_error',
+        'window_style_error',
+        'import_error',
+        'storage_error',
+      }.contains(error.code)) {
+    return error.message ?? 'Не удалось выполнить действие.';
+  }
+  return 'Не удалось выполнить действие. Перезапустите приложение и повторите попытку.';
 }

@@ -1,12 +1,12 @@
 #include "flutter_window.h"
 
-#include <iostream>
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "capture_exclusion.h"
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project, bool start_hidden)
+    : project_(project), start_hidden_(start_hidden) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -17,13 +17,7 @@ bool FlutterWindow::OnCreate() {
 
   // Apply to the top-level HWND before it can be shown. Supported capture APIs
   // omit this window on Windows 10 2004+; older Windows may show a black area.
-  // Use the numeric value so builds with older Windows SDKs still compile.
-  constexpr DWORD kExcludeFromCapture = 0x00000011;  // WDA_EXCLUDEFROMCAPTURE
-  if (!SetWindowDisplayAffinity(GetHandle(), kExcludeFromCapture)) {
-    const DWORD error = GetLastError();
-    std::cerr << "Could not exclude Helper from screen capture. Win32 error: "
-              << error << std::endl;
-  }
+  ExcludeFromCapture(GetHandle());
 
   RECT frame = GetClientArea();
 
@@ -38,7 +32,7 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   background_manager_ = std::make_unique<BackgroundManager>(
-      GetHandle(), flutter_controller_->engine()->messenger());
+      GetHandle(), flutter_controller_->engine()->messenger(), start_hidden_);
 
   // Dart configures transparency, the frameless style and always-on-top before
   // window_manager shows the window. Do not show a decorated window here.

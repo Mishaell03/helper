@@ -1,25 +1,42 @@
 #include "background_manager.h"
+#include "capture_exclusion.h"
+#include "utils.h"
 
 #include <flutter/standard_method_codec.h>
+#include <flutter_windows.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
 #include <vector>
 
 namespace {
 constexpr wchar_t kSettingsPath[] = L"Software\\Helper\\Hotkeys";
 constexpr wchar_t kSettingsValue[] = L"BindingsV1";
+constexpr wchar_t kWindowPath[] = L"Software\\Helper\\Window";
+constexpr wchar_t kRunPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kRunValue[] = L"Helper.Background";
+constexpr int kMinWidth = 360;
+constexpr int kMinHeight = 300;
+constexpr int kMaxWidth = 1600;
+constexpr int kMaxHeight = 1200;
+double WindowScale(HWND window) {
+  const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+  return FlutterDesktopGetDpiForMonitor(monitor) / 96.0;
+}
 std::string WinError(const char* operation, DWORD error) {
   return std::string(operation) + " (Win32 " + std::to_string(error) + ")";
 }
 }  // namespace
 
 BackgroundManager::BackgroundManager(HWND window,
-                                     flutter::BinaryMessenger* messenger)
-    : window_(window) {
+                                     flutter::BinaryMessenger* messenger,
+                                     bool start_hidden)
+    : window_(window), start_hidden_(start_hidden) {
   placement_.length = sizeof(placement_);
   ApplyStyles();
   std::array<Shortcut, 2> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
-                                     {MOD_CONTROL | MOD_SHIFT, VK_F11}}};
+                                     {MOD_CONTROL | MOD_SHIFT, VK_F4}}};
   DWORD data[4]{};
   DWORD size = sizeof(data);
   const LSTATUS read = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath,
@@ -29,15 +46,25 @@ BackgroundManager::BackgroundManager(HWND window,
       !(Shortcut{data[0], data[1]} == Shortcut{data[2], data[3]})) {
     shortcuts = {{{data[0], data[1]}, {data[2], data[3]}}};
   } else if (read != ERROR_FILE_NOT_FOUND && read != ERROR_PATH_NOT_FOUND) {
-    startup_error_ = "Could not read valid hotkey settings; using defaults. ";
+    startup_error_ += "Не удалось прочитать сочетания клавиш. Используются настройки по умолчанию. ";
   }
-  std::string error;
-  if (!Apply(shortcuts, false, &error)) {
-    // Do not silently change persisted shortcuts or leave only one registered.
-    bindings_[0].shortcut = shortcuts[0];
-    bindings_[1].shortcut = shortcuts[1];
-    startup_error_ += error + ". Hotkeys inactive; choose new combinations.";
+  // At startup, retain each available action independently: a conflict on the
+  // visibility shortcut must not disable an otherwise available exit shortcut.
+  // Reconfiguration below remains transactional and preserves the old pair.
+  for (size_t i = 0; i < bindings_.size(); ++i) {
+    bindings_[i].shortcut = shortcuts[i];
+    const int id = static_cast<int>(i) + 1;
+    if (RegisterHotKey(window_, id, shortcuts[i].modifiers | MOD_NOREPEAT,
+                       shortcuts[i].key)) {
+      bindings_[i].id = id;
+    } else {
+      startup_error_ += WinError(i == 0
+          ? "Сочетание для показа и скрытия занято или зарезервировано Windows. Выберите другое"
+          : "Сочетание для выхода занято или зарезервировано Windows. Выберите другое",
+          GetLastError()) + ". ";
+    }
   }
+  LoadAutostart();
 
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/background", &flutter::StandardMethodCodec::GetInstance());
@@ -45,6 +72,22 @@ BackgroundManager::BackgroundManager(HWND window,
     const auto& method = call.method_name();
     if (method == "getSettings") {
       result->Success(State());
+    } else if (method == "getStorageDirectory") {
+      PWSTR directory = nullptr;
+      const HRESULT status = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0,
+                                                   nullptr, &directory);
+      if (FAILED(status)) {
+        result->Error("storage_error", "Не удалось определить каталог локальных данных пользователя.");
+      } else {
+        const std::wstring path = std::wstring(directory) + L"\\Helper";
+        const std::string utf8 = Utf8FromUtf16(path.c_str());
+        if (utf8.empty()) {
+          result->Error("storage_error", "Не удалось прочитать путь к локальным данным.");
+        } else {
+          result->Success(Value(utf8));
+        }
+      }
+      if (directory) CoTaskMemFree(directory);
     } else if (method == "saveSettings") {
       const auto* map = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
       std::array<Shortcut, 2> shortcuts{};
@@ -52,7 +95,7 @@ BackgroundManager::BackgroundManager(HWND window,
           map->count(Value("exit")) == 0 ||
           !ReadShortcut(map->at(Value("toggle")), &shortcuts[0]) ||
           !ReadShortcut(map->at(Value("exit")), &shortcuts[1])) {
-        result->Error("invalid_hotkey", "Use modifiers and a supported keyboard key.");
+        result->Error("invalid_hotkey", "Выберите Ctrl, Alt, Shift или Win и поддерживаемую клавишу.");
         return;
       }
       std::string error;
@@ -65,17 +108,39 @@ BackgroundManager::BackgroundManager(HWND window,
     } else if (method == "setRecording") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
       if (!enabled) {
-        result->Error("invalid_argument", "Expected boolean.");
+        result->Error("invalid_argument", "Ожидается значение «включено» или «выключено».");
         return;
       }
       recording_ = *enabled;
       result->Success();
+    } else if (method == "setAutostart") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      std::string error;
+      if (!enabled) {
+        result->Error("invalid_argument", "Некорректное значение автозапуска.");
+      } else if (!SetAutostart(*enabled, &error)) {
+        result->Error("autostart_error", error);
+      } else {
+        result->Success(State());
+      }
+    } else if (method == "prepareWindow") {
+      if (!ApplyStyles()) {
+        result->Error("window_style_error", startup_error_);
+        return;
+      }
+      if (!prepared_) {
+        RestoreSize();
+        prepared_ = true;
+      }
+      result->Success(State());
+    } else if (method == "pickMarkdownFiles") {
+      PickMarkdownFiles(std::move(result));
     } else if (method == "hide") {
       Hide();
       result->Success();
     } else if (method == "show") {
-      Show();
-      result->Success();
+      if (Show()) result->Success();
+      else result->Error("window_style_error", startup_error_);
     } else if (method == "exit") {
       result->Success();
       // Post rather than destroy the messenger during its own callback.
@@ -87,6 +152,7 @@ BackgroundManager::BackgroundManager(HWND window,
 }
 
 BackgroundManager::~BackgroundManager() {
+  if (prepared_) SaveSize();
   channel_->SetMethodCallHandler(nullptr);
   for (const auto& binding : bindings_) {
     if (binding.id) UnregisterHotKey(window_, binding.id);
@@ -123,7 +189,7 @@ bool BackgroundManager::ReadShortcut(const Value& value, Shortcut* shortcut) {
 bool BackgroundManager::Apply(const std::array<Shortcut, 2>& shortcuts,
                               bool persist, std::string* error) {
   if (!Valid(shortcuts[0]) || !Valid(shortcuts[1]) || shortcuts[0] == shortcuts[1]) {
-    *error = "Shortcuts must be valid and different, with at least one modifier.";
+    *error = "Сочетания должны различаться и содержать Ctrl, Alt, Shift или Win и поддерживаемую клавишу.";
     return false;
   }
   // Keep old registrations until BOTH new shortcuts and persistence succeed.
@@ -145,7 +211,9 @@ bool BackgroundManager::Apply(const std::array<Shortcut, 2>& shortcuts,
            std::find(acquired.begin(), acquired.end(), id) != acquired.end()) ++id;
     if (!RegisterHotKey(window_, id, shortcuts[i].modifiers | MOD_NOREPEAT,
                         shortcuts[i].key)) {
-      *error = WinError(i == 0 ? "Toggle shortcut unavailable" : "Exit shortcut unavailable",
+      *error = WinError(i == 0
+          ? "Сочетание для показа и скрытия недоступно: оно занято или зарезервировано Windows. Выберите другое"
+          : "Сочетание для выхода недоступно: оно занято или зарезервировано Windows. Выберите другое",
                         GetLastError());
       rollback();
       return false;
@@ -165,7 +233,7 @@ bool BackgroundManager::Apply(const std::array<Shortcut, 2>& shortcuts,
       RegCloseKey(key);
     }
     if (status != ERROR_SUCCESS) {
-      *error = WinError("Could not save settings", status);
+      *error = WinError("Не удалось сохранить сочетания клавиш", status);
       rollback();
       return false;
     }
@@ -186,35 +254,259 @@ BackgroundManager::Value BackgroundManager::State() const {
   return Value(Map{{Value("toggle"), encode(bindings_[0].shortcut)},
                    {Value("exit"), encode(bindings_[1].shortcut)},
                    {Value("active"), Value(bindings_[0].id != 0 && bindings_[1].id != 0)},
+                   {Value("autostart"), Value(autostart_)},
+                   {Value("startHidden"), Value(start_hidden_)},
                    {Value("warning"), Value(startup_error_)}});
 }
 
-void BackgroundManager::ApplyStyles() {
+bool BackgroundManager::ApplyStyles() {
   const LONG_PTR styles = GetWindowLongPtr(window_, GWL_EXSTYLE);
-  SetWindowLongPtr(window_, GWL_EXSTYLE,
-                   (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW);
-  SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0,
-      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  SetLastError(ERROR_SUCCESS);
+  const LONG_PTR previous = SetWindowLongPtr(window_, GWL_EXSTYLE,
+      (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW);
+  if (previous == 0 && GetLastError() != ERROR_SUCCESS) {
+    startup_error_ = WinError("Не удалось настроить фоновое окно", GetLastError());
+    return false;
+  }
+  // Keep standard Windows sizing, but leave non-client painting to the
+  // existing frameless window_manager implementation.
+  const LONG_PTR style = GetWindowLongPtr(window_, GWL_STYLE);
+  SetLastError(ERROR_SUCCESS);
+  if (SetWindowLongPtr(window_, GWL_STYLE, style | WS_THICKFRAME) == 0 &&
+      GetLastError() != ERROR_SUCCESS) {
+    startup_error_ = WinError("Не удалось включить изменение размера окна", GetLastError());
+    return false;
+  }
+  if (!SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+    startup_error_ = WinError("Не удалось обновить параметры окна", GetLastError());
+    return false;
+  }
+  return true;
 }
 
 void BackgroundManager::Hide() {
   if (hidden_) return;
   GetWindowPlacement(window_, &placement_);
+  if (prepared_) SaveSize();
   hidden_ = true;
   ShowWindow(window_, SW_HIDE);
+  if (HWND dialog = ImportDialogWindow()) ShowWindow(dialog, SW_HIDE);
 }
 
-void BackgroundManager::Show() {
-  ApplyStyles();
+bool BackgroundManager::Show() {
+  if (!ApplyStyles()) return false;
+  ExcludeFromCapture(window_);
   if (hidden_) {
     SetWindowPlacement(window_, &placement_);
     hidden_ = false;
   }
   ShowWindow(window_, IsIconic(window_) ? SW_RESTORE : SW_SHOW);
   SetForegroundWindow(window_);
+  if (HWND dialog = ImportDialogWindow()) {
+    ExcludeFromCapture(dialog);
+    ShowWindow(dialog, SW_SHOW);
+    SetForegroundWindow(dialog);
+  }
+  return true;
+}
+
+HWND BackgroundManager::ImportDialogWindow() const {
+  if (!import_dialog_) return nullptr;
+  Microsoft::WRL::ComPtr<IOleWindow> ole_window;
+  HWND window = nullptr;
+  if (SUCCEEDED(import_dialog_.As(&ole_window))) ole_window->GetWindow(&window);
+  return window;
+}
+
+void BackgroundManager::PickMarkdownFiles(
+    std::unique_ptr<flutter::MethodResult<Value>> result) {
+  if (import_dialog_) {
+    result->Error("import_error", "Диалог импорта уже открыт.");
+    return;
+  }
+  HRESULT status = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(import_dialog_.GetAddressOf()));
+  const COMDLG_FILTERSPEC filters[] = {
+      {L"Текстовые файлы (*.md; *.txt)", L"*.md;*.txt"},
+      {L"Markdown (*.md)", L"*.md"}, {L"Текст (*.txt)", L"*.txt"}};
+  if (SUCCEEDED(status)) status = import_dialog_->SetOptions(
+      FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST |
+      FOS_ALLOWMULTISELECT | FOS_NOCHANGEDIR);
+  if (SUCCEEDED(status)) status = import_dialog_->SetFileTypes(ARRAYSIZE(filters), filters);
+  if (SUCCEEDED(status)) status = import_dialog_->SetTitle(L"Импорт текстовых блоков");
+  if (SUCCEEDED(status)) status = import_dialog_->SetOkButtonLabel(L"Импортировать");
+  if (SUCCEEDED(status)) {
+    CaptureDialogScope capture_scope;
+    // The Windows dialog pumps messages. HandleMessage defers exit until this
+    // call returns so the messenger/result cannot be destroyed mid-callback.
+    status = import_dialog_->Show(window_);
+  }
+  flutter::EncodableList paths;
+  if (SUCCEEDED(status)) {
+    Microsoft::WRL::ComPtr<IShellItemArray> items;
+    status = import_dialog_->GetResults(&items);
+    DWORD count = 0;
+    if (SUCCEEDED(status)) status = items->GetCount(&count);
+    for (DWORD i = 0; SUCCEEDED(status) && i < count; ++i) {
+      Microsoft::WRL::ComPtr<IShellItem> item;
+      status = items->GetItemAt(i, &item);
+      PWSTR filename = nullptr;
+      if (SUCCEEDED(status)) status = item->GetDisplayName(SIGDN_FILESYSPATH, &filename);
+      if (SUCCEEDED(status)) {
+        const int size = WideCharToMultiByte(CP_UTF8, 0, filename, -1,
+                                             nullptr, 0, nullptr, nullptr);
+        if (size > 0) {
+          std::string utf8(static_cast<size_t>(size), '\0');
+          WideCharToMultiByte(CP_UTF8, 0, filename, -1, utf8.data(), size, nullptr, nullptr);
+          utf8.pop_back();
+          paths.emplace_back(utf8);
+        } else {
+          status = HRESULT_FROM_WIN32(GetLastError());
+        }
+      }
+      if (filename) CoTaskMemFree(filename);
+    }
+  }
+  import_dialog_.Reset();
+  if (SUCCEEDED(status) || status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+    result->Success(Value(paths));
+  } else {
+    result->Error("import_error", "Не удалось открыть диалог импорта. Код Windows: " +
+        std::to_string(static_cast<unsigned long>(status)));
+  }
+  if (exit_requested_) PostMessage(window_, WM_APP + 43, 0, 0);
+}
+
+void BackgroundManager::LoadAutostart() {
+  DWORD bytes = 0;
+  const LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, kRunPath, kRunValue,
+      RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
+  if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) return;
+  if (status != ERROR_SUCCESS) {
+    startup_error_ += WinError("Не удалось прочитать настройку автозапуска", status) + ". ";
+    return;
+  }
+  // The Run value IS the persisted preference. Repair an old executable path
+  // when the user next launches a moved installation. Never create duplicates.
+  autostart_ = true;
+  std::string error;
+  if (!SetAutostart(true, &error)) startup_error_ += error + ". ";
+}
+
+bool BackgroundManager::SetAutostart(bool enabled, std::string* error) {
+  std::wstring command;
+  if (enabled) {
+    std::vector<wchar_t> path(32768);
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(),
+                                           static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= static_cast<DWORD>(path.size())) {
+      *error = "Не удалось определить путь к приложению для автозапуска.";
+      return false;
+    }
+    if (GetFileAttributesW(path.data()) == INVALID_FILE_ATTRIBUTES) {
+      *error = "Файл приложения перемещён или удалён. Запустите его из нового расположения.";
+      return false;
+    }
+    command = L"\"" + std::wstring(path.data(), length) + L"\" --background";
+  }
+  HKEY key = nullptr;
+  LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, kRunPath, 0, nullptr, 0,
+      KEY_SET_VALUE, nullptr, &key, nullptr);
+  if (status == ERROR_SUCCESS) {
+    if (enabled) {
+      status = RegSetValueExW(key, kRunValue, 0, REG_SZ,
+          reinterpret_cast<const BYTE*>(command.c_str()),
+          static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+    } else {
+      status = RegDeleteValueW(key, kRunValue);
+      if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
+    }
+    RegCloseKey(key);
+  }
+  if (status != ERROR_SUCCESS) {
+    *error = WinError(enabled ? "Не удалось включить автозапуск"
+                             : "Не удалось отключить автозапуск", status);
+    return false;
+  }
+  autostart_ = enabled;
+  return true;
+}
+
+void BackgroundManager::RestoreSize() {
+  DWORD dimensions[2] = {368, 440};
+  DWORD bytes = sizeof(dimensions);
+  DWORD saved[2]{};
+  const LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, kWindowPath, L"SizeV1",
+      RRF_RT_REG_BINARY, nullptr, saved, &bytes);
+  if (status == ERROR_SUCCESS && bytes == sizeof(saved)) {
+    dimensions[0] = std::clamp(saved[0], static_cast<DWORD>(kMinWidth),
+                               static_cast<DWORD>(kMaxWidth));
+    dimensions[1] = std::clamp(saved[1], static_cast<DWORD>(kMinHeight),
+                               static_cast<DWORD>(kMaxHeight));
+  } else if (status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND) {
+    startup_error_ += "Не удалось прочитать размер окна. Используется размер по умолчанию. ";
+  }
+  const double scale = WindowScale(window_);
+  MONITORINFO monitor{};
+  monitor.cbSize = sizeof(monitor);
+  if (!GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+    startup_error_ += "Не удалось определить рабочую область экрана. ";
+    return;
+  }
+  const RECT work = monitor.rcWork;
+  const int width = std::min(static_cast<int>(dimensions[0] * scale),
+                            static_cast<int>(work.right - work.left));
+  const int height = std::min(static_cast<int>(dimensions[1] * scale),
+                             static_cast<int>(work.bottom - work.top));
+  if (!SetWindowPos(window_, nullptr,
+      work.left + (work.right - work.left - width) / 2,
+      work.top + (work.bottom - work.top - height) / 2, width, height,
+      SWP_NOZORDER | SWP_NOACTIVATE)) {
+    startup_error_ += WinError("Не удалось восстановить размер окна", GetLastError()) + ". ";
+  }
+}
+
+void BackgroundManager::SaveSize() {
+  WINDOWPLACEMENT current{};
+  current.length = sizeof(current);
+  if (!GetWindowPlacement(window_, &current)) return;
+  const RECT normal = current.rcNormalPosition;
+  const double scale = WindowScale(window_);
+  const DWORD dimensions[] = {
+      static_cast<DWORD>(std::clamp(static_cast<int>((normal.right - normal.left) / scale),
+                                    kMinWidth, kMaxWidth)),
+      static_cast<DWORD>(std::clamp(static_cast<int>((normal.bottom - normal.top) / scale),
+                                    kMinHeight, kMaxHeight))};
+  HKEY key = nullptr;
+  LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, kWindowPath, 0, nullptr, 0,
+      KEY_SET_VALUE, nullptr, &key, nullptr);
+  if (status == ERROR_SUCCESS) {
+    status = RegSetValueExW(key, L"SizeV1", 0, REG_BINARY,
+        reinterpret_cast<const BYTE*>(dimensions), sizeof(dimensions));
+    RegCloseKey(key);
+  }
+  if (status != ERROR_SUCCESS) {
+    const std::string error = WinError("Не удалось сохранить размер окна", status);
+    std::cerr << error << std::endl;
+    if (channel_) channel_->InvokeMethod("warning", std::make_unique<Value>(error));
+  }
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_GETMINMAXINFO) {
+    auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+    const double scale = WindowScale(window_);
+    info->ptMinTrackSize = {static_cast<LONG>(kMinWidth * scale),
+                            static_cast<LONG>(kMinHeight * scale)};
+    info->ptMaxTrackSize = {static_cast<LONG>(kMaxWidth * scale),
+                            static_cast<LONG>(kMaxHeight * scale)};
+    return true;
+  }
+  if (message == WM_EXITSIZEMOVE && prepared_) {
+    SaveSize();
+    ExcludeFromCapture(window_);
+  }
   if (message == WM_CLOSE) {
     Hide();
     return true;
@@ -224,6 +516,11 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     return true;
   }
   if (message == WM_APP + 43) {
+    if (import_dialog_) {
+      exit_requested_ = true;
+      import_dialog_->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
+      return true;
+    }
     DestroyWindow(window_);
     return true;
   }
@@ -232,9 +529,9 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
   for (size_t i = 0; i < bindings_.size(); ++i) {
     const auto& b = bindings_[i];
     if (!b.id || wparam != static_cast<WPARAM>(b.id) ||
-        LOWORD(lparam) != b.shortcut.modifiers || HIWORD(lparam) != b.shortcut.key)
+        (LOWORD(lparam) & 0x0f) != b.shortcut.modifiers || HIWORD(lparam) != b.shortcut.key)
       continue;
-    if (recording_) {
+    if (recording_ && GetForegroundWindow() == window_) {
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
           {Value("modifiers"), Value(static_cast<int32_t>(b.shortcut.modifiers))},
           {Value("key"), Value(static_cast<int32_t>(b.shortcut.key))}}));
