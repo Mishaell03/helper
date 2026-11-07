@@ -11,6 +11,7 @@ import '../panel_theme.dart';
 import '../window_resize_border.dart';
 import '../automation/text_automation.dart';
 import '../automation/automation_controls.dart';
+import '../updates/update_settings.dart';
 import 'block_card.dart';
 import 'markdown_controller.dart';
 import 'markdown_repository.dart';
@@ -51,6 +52,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   bool _picking = false;
   bool _confirmingImport = false;
   bool _opening = false;
+  bool _installingUpdate = false;
   String? _loadError;
   static const _cardExtent = BlockCard.extent;
 
@@ -58,7 +60,11 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       .where((block) => _view != _View.pinned || block.pinned)
       .toList();
   bool get _busy =>
-      _loading || _picking || _opening || (_controller?.busy ?? false);
+      _loading ||
+      _picking ||
+      _opening ||
+      _installingUpdate ||
+      (_controller?.busy ?? false);
 
   @override
   void initState() {
@@ -133,6 +139,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   });
 
   Future<void> _startBlock(int id, {bool fromHotkey = false}) async {
+    if (_installingUpdate) return;
     if (_automation == null) return;
     if (!_automation!.canStart) {
       _notify(
@@ -151,6 +158,18 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       return true;
     }
     return false;
+  }
+
+  Future<void> _installUpdate(Future<void> Function() launch) async {
+    setState(() => _installingUpdate = true);
+    try {
+      await _automation?.stop();
+      await _automation?.flushPreferences();
+      await launch();
+      await BackgroundService.instance.exit();
+    } finally {
+      if (mounted) setState(() => _installingUpdate = false);
+    }
   }
 
   Future<void> _deleteBlock(BlockSummary block) async {
@@ -988,6 +1007,13 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           embedded: true,
           preferencesOnly: true,
           scrollable: false,
+        ),
+        UpdateSettings(
+          enabled:
+              !_busy &&
+              _automation?.state.engaged != true &&
+              _automation?.commandPending != true,
+          install: _installUpdate,
         ),
         TextButton.icon(
           onPressed: _exitApplication,

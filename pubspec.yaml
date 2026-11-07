@@ -40,6 +40,7 @@ dependencies:
   window_manager: ^0.5.1
   sqflite_common_ffi: ^2.4.5
   path: ^1.9.1
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
@@ -62,6 +63,8 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/update_windows.ps1
 
   # To add assets to your application, add an assets section, like this:
   # assets:

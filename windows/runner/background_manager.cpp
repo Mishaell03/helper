@@ -108,6 +108,8 @@ BackgroundManager::BackgroundManager(HWND window,
     const auto& method = call.method_name();
     if (method == "getSettings") {
       result->Success(State());
+    } else if (method == "getAppVersion") {
+      result->Success(Value(FLUTTER_VERSION));
     } else if (method == "getStorageDirectory") {
       PWSTR directory = nullptr;
       const HRESULT status = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0,

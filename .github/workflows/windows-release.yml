@@ -1,0 +1,49 @@
+name: Windows release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Validate version tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:RELEASE_TAG -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use a tag like v1.2.3' }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - run: flutter pub get
+      - run: flutter analyze --no-pub
+      - run: flutter test --no-pub
+      - name: Windows updater tests
+        shell: powershell
+        run: ./tool/test_windows_updater.ps1
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Native timing tests
+        shell: pwsh
+        run: |
+          cl /std:c++17 /EHsc /W4 /WX test/native/typing_cadence_test.cpp /Fe:typing_cadence_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./typing_cadence_test.exe
+      - name: Build release packages
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { choco install innosetup --yes --no-progress }
+          ./tool/build_windows_installer.ps1 -Version $env:RELEASE_VERSION -BuildNumber ${{ github.run_number }} -SkipTests
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer/output/v${{ env.RELEASE_VERSION }}/helper-windows-x64.zip
+            installer/output/v${{ env.RELEASE_VERSION }}/helper-windows-x64-setup.exe
+            installer/output/v${{ env.RELEASE_VERSION }}/SHA256SUMS.txt
+          generate_release_notes: true
