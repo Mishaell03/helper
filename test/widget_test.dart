@@ -39,7 +39,7 @@ void main() {
           if (const ['getState', 'setSpeed', 'stop'].contains(call.method)) {
             return {
               'phase': 'idle',
-              'speed': 180,
+              'speed': 1000,
               'revision': 0,
               'stopToken': 0,
             };
@@ -121,6 +121,8 @@ void main() {
 
   Future<void> importFiles(WidgetTester tester) async {
     await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Продолжить импорт'));
     await settle(tester);
     if (find.text('Закрыть').evaluate().isNotEmpty) {
       await tester.tap(find.text('Закрыть'));
@@ -414,6 +416,37 @@ void main() {
   });
 
   testWidgets(
+    'Предупреждение показывается до выбора файла; отмена не открывает выбор',
+    (tester) async {
+      var pickerCalls = 0;
+      await tester.pumpWidget(
+        MyApp(
+          controller: controller,
+          pickFiles: () async {
+            pickerCalls++;
+            return [];
+          },
+        ),
+      );
+      await settle(tester);
+      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('Импорт во время демонстрации'), findsOneWidget);
+      expect(find.textContaining('имена файлов и пути'), findsOneWidget);
+      expect(pickerCalls, 0);
+      await tester.tap(find.text('Отмена'));
+      await settle(tester);
+      expect(pickerCalls, 0);
+      expect(controller.files, isEmpty);
+      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Продолжить импорт'));
+      await settle(tester);
+      expect(pickerCalls, 1);
+    },
+  );
+
+  testWidgets(
     'Подсказки, уведомления и диалоги используют тот же полупрозрачный фон',
     (tester) async {
       final input = await file(tester, 'оформление.md', '# Карточка\n\nТекст');
@@ -451,6 +484,8 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Продолжить импорт'));
       await settle(tester);
       expect(find.byType(SnackBar), findsOneWidget);
       expect(

@@ -115,13 +115,13 @@ void main() {
       await tester.tap(find.text('Тестовый блок'));
       await settle(tester);
       final slider = tester.widget<Slider>(find.byType(Slider));
-      expect(slider.min, 30);
-      expect(slider.max, 500);
-      expect(slider.value, 180);
+      expect(slider.min, 300);
+      expect(slider.max, 2000);
+      expect(slider.value, 1000);
       for (final preset in [
-        ('Медленно', 80),
-        ('Обычно', 180),
-        ('Быстро', 400),
+        ('Медленно', 300),
+        ('Обычно', 1000),
+        ('Быстро', 2000),
       ]) {
         await tester.tap(find.text(preset.$1));
         await settle(tester);
@@ -130,8 +130,8 @@ void main() {
       }
       await tester.drag(find.byType(Slider), const Offset(400, 0));
       await settle(tester);
-      expect(automation.speed, 500);
-      expect(await tester.runAsync(repository.typingSpeed), 500);
+      expect(automation.speed, 2000);
+      expect(await tester.runAsync(repository.typingSpeed), 2000);
     },
   );
 

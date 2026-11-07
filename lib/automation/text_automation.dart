@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../markdown/markdown_repository.dart';
+import 'typing_speed.dart';
 
 enum AutomationPhase {
   idle,
@@ -22,7 +23,7 @@ class AutomationState {
     this.position = 0,
     this.total = 0,
     this.countdown = 0,
-    this.speed = 180,
+    this.speed = TypingSpeed.normal,
     this.message = '',
     this.revision = 0,
     this.stopToken = 0,
@@ -37,7 +38,7 @@ class AutomationState {
     position: map['position'] as int? ?? 0,
     total: map['total'] as int? ?? 0,
     countdown: map['countdown'] as int? ?? 0,
-    speed: map['speed'] as int? ?? 180,
+    speed: map['speed'] as int? ?? TypingSpeed.normal,
     message: map['message'] as String? ?? '',
     revision: map['revision'] as int? ?? 0,
     stopToken: map['stopToken'] as int? ?? 0,
@@ -108,7 +109,7 @@ class TextAutomationController extends ChangeNotifier {
   AutomationState state = const AutomationState();
   bool ready = false;
   bool commandPending = false;
-  int speed = 180;
+  int speed = TypingSpeed.normal;
   int? preparingBlock;
   String? failure;
   VoidCallback? onStartRequested;
@@ -221,15 +222,13 @@ class TextAutomationController extends ChangeNotifier {
   Future<void> cancelCountdown() => _command('cancelCountdown');
 
   void previewSpeed(int value) {
-    speed = value.clamp(30, 500);
+    speed = value.clamp(TypingSpeed.min, TypingSpeed.max);
     _notify();
   }
 
   Future<void> setSpeed(int value) {
-    if (value < 30 || value > 500) {
-      throw const FormatException(
-        'Скорость должна быть от 30 до 500 символов в минуту.',
-      );
+    if (value < TypingSpeed.min || value > TypingSpeed.max) {
+      throw const FormatException(TypingSpeed.validationMessage);
     }
     speed = value;
     final generation = ++_speedGeneration;

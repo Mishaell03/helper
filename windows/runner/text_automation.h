@@ -69,7 +69,7 @@ class TextAutomation {
   int64_t block_id_ = 0;
   uint64_t revision_ = 0;
   uint64_t stop_generation_ = 0;
-  UINT speed_ = 180;
+  UINT speed_ = 1000;
   int countdown_ = 0;
   ULONGLONG deadline_ = 0;
   ULONGLONG last_guard_ = 0;

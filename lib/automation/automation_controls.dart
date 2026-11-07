@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'text_automation.dart';
+import 'typing_speed.dart';
 
 class TypingSpeedSettings extends StatelessWidget {
   const TypingSpeedSettings({super.key, required this.controller});
@@ -26,9 +27,9 @@ class TypingSpeedSettings extends StatelessWidget {
               thumbColor: Colors.white70,
             ),
             child: Slider(
-              min: 30,
-              max: 500,
-              divisions: 470,
+              min: TypingSpeed.min.toDouble(),
+              max: TypingSpeed.max.toDouble(),
+              divisions: TypingSpeed.max - TypingSpeed.min,
               value: controller.speed.toDouble(),
               label: '${controller.speed}',
               semanticFormatterCallback: (value) =>
@@ -47,9 +48,9 @@ class TypingSpeedSettings extends StatelessWidget {
           spacing: 4,
           children: [
             for (final preset in [
-              (80, 'Медленно'),
-              (180, 'Обычно'),
-              (400, 'Быстро'),
+              (TypingSpeed.min, 'Медленно'),
+              (TypingSpeed.normal, 'Обычно'),
+              (TypingSpeed.max, 'Быстро'),
             ])
               TextButton(
                 style: TextButton.styleFrom(

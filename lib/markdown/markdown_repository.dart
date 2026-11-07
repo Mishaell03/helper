@@ -6,6 +6,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'models.dart';
 import '../background_service.dart';
+import '../automation/typing_speed.dart';
 
 class MarkdownRepository {
   MarkdownRepository._(this._database);
@@ -200,14 +201,15 @@ class MarkdownRepository {
     final value = rows.isEmpty
         ? null
         : int.tryParse(rows.single['value'] as String);
-    return value != null && value >= 30 && value <= 500 ? value : 180;
+    if (value == null) return TypingSpeed.normal;
+    final migrated = value.clamp(TypingSpeed.min, TypingSpeed.max);
+    if (migrated != value) await setTypingSpeed(migrated);
+    return migrated;
   }
 
   Future<void> setTypingSpeed(int value) async {
-    if (value < 30 || value > 500) {
-      throw const FormatException(
-        'Скорость должна быть от 30 до 500 символов в минуту.',
-      );
+    if (value < TypingSpeed.min || value > TypingSpeed.max) {
+      throw const FormatException(TypingSpeed.validationMessage);
     }
     await _database.insert('preferences', {
       'key': 'automation_cpm',

@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/automation/text_automation.dart';
 import 'package:helper/markdown/markdown_repository.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'support/markdown_fixture.dart';
 import 'support/automation_backend.dart';
@@ -35,21 +36,21 @@ void main() {
   }
 
   test(
-    'Скорость 180 по умолчанию; диапазон и сохранение после повторного открытия SQLite',
+    'Скорость 1000 по умолчанию; диапазон и сохранение после повторного открытия SQLite',
     () async {
       await controller.initialize();
-      expect(controller.speed, 180);
-      await controller.setSpeed(30);
-      expect(await repository.typingSpeed(), 30);
-      await controller.setSpeed(500);
-      expect(await repository.typingSpeed(), 500);
-      expect(() => controller.setSpeed(29), throwsFormatException);
-      expect(() => controller.setSpeed(501), throwsFormatException);
+      expect(controller.speed, 1000);
+      await controller.setSpeed(300);
+      expect(await repository.typingSpeed(), 300);
+      await controller.setSpeed(2000);
+      expect(await repository.typingSpeed(), 2000);
+      expect(() => controller.setSpeed(299), throwsFormatException);
+      expect(() => controller.setSpeed(2001), throwsFormatException);
       await repository.close();
       repository = await MarkdownRepository.open(
         databasePath: '${directory.path}/test.sqlite3',
       );
-      expect(await repository.typingSpeed(), 500);
+      expect(await repository.typingSpeed(), 2000);
     },
   );
 
@@ -57,19 +58,51 @@ void main() {
     await controller.initialize();
     backend.speedFailure = true;
     await controller.setSpeed(400);
-    expect(controller.speed, 180);
-    expect(await repository.typingSpeed(), 180);
+    expect(controller.speed, 1000);
+    expect(await repository.typingSpeed(), 1000);
     expect(controller.failure, 'Скорость не применена.');
   });
 
-  test('Быстрые изменения профиля сохраняются последовательно без потери последнего значения', () async {
-    await controller.initialize();
-    await Future.wait([controller.setSpeed(80), controller.setSpeed(180), controller.setSpeed(400)]);
-    expect(await repository.typingSpeed(), 400);
-    expect(controller.speed, 400);
-    expect(controller.state.speed, 400);
-    expect(controller.savingPreferences, isFalse);
-  });
+  test(
+    'Старая скорость приводится к диапазону и сохраняется без потери текста',
+    () async {
+      final id = await source('Сохранить текст');
+      final db = await databaseFactoryFfi.openDatabase(
+        '${directory.path}/test.sqlite3',
+      );
+      for (final entry in [(180, 300), (400, 400), (2500, 2000)]) {
+        await db.insert('preferences', {
+          'key': 'automation_cpm',
+          'value': '${entry.$1}',
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+        expect(await repository.typingSpeed(), entry.$2);
+        final rows = await db.query(
+          'preferences',
+          where: 'key = ?',
+          whereArgs: ['automation_cpm'],
+        );
+        expect(rows.single['value'], '${entry.$2}');
+      }
+      expect((await repository.block(id)).content, 'Сохранить текст');
+      await db.close();
+    },
+  );
+
+  test(
+    'Быстрые изменения профиля сохраняются последовательно без потери последнего значения',
+    () async {
+      await controller.initialize();
+      await Future.wait([
+        controller.setSpeed(300),
+        controller.setSpeed(1000),
+        controller.setSpeed(400),
+      ]);
+      expect(await repository.typingSpeed(), 400);
+      expect(controller.speed, 400);
+      expect(controller.state.speed, 400);
+      expect(controller.savingPreferences, isFalse);
+    },
+  );
 
   test(
     'В Win32 передаётся полный Unicode-текст без обрезки и нормализации',

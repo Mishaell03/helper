@@ -13,7 +13,7 @@ class TestAutomationBackend extends AutomationBackend {
     'position': 0,
     'total': 0,
     'countdown': 0,
-    'speed': 180,
+    'speed': 1000,
     'revision': 0,
     'stopToken': 0,
     'message': '',

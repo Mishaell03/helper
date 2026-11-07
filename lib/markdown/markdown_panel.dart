@@ -49,6 +49,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   bool _source = false;
   bool _loading = true;
   bool _picking = false;
+  bool _confirmingImport = false;
   bool _opening = false;
   String? _loadError;
   static const _cardExtent = BlockCard.extent;
@@ -233,8 +234,38 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   Future<void> _import() async {
     if (_busy || _controller == null) return;
-    setState(() => _picking = true);
+    setState(() {
+      _picking = true;
+      _confirmingImport = true;
+    });
     await _run(() async {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          scrollable: true,
+          title: const Text('Импорт во время демонстрации'),
+          content: const Text(
+            'Если сейчас включена демонстрация экрана или запись, окно выбора '
+            'файла, имена файлов и пути могут быть видны другим участникам. '
+            'Защита окна приложения не распространяется на системное окно '
+            'выбора файлов. При необходимости остановите демонстрацию перед '
+            'импортом. Продолжить?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Продолжить импорт'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      setState(() => _confirmingImport = false);
+      if (confirmed != true) return;
       if (widget.pickFiles == null && !isWindows) {
         throw const FormatException(
           'Выбор файлов доступен в приложении для Windows.',
@@ -269,7 +300,12 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         );
       }
     });
-    if (mounted) setState(() => _picking = false);
+    if (mounted) {
+      setState(() {
+        _picking = false;
+        _confirmingImport = false;
+      });
+    }
   }
 
   Future<void> _open(BlockSummary block) async {
@@ -466,7 +502,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                 _windowHandle(),
                 if (_opened == null) _toolbar(),
                 if (_loading ||
-                    _picking ||
+                    (_picking && !_confirmingImport) ||
                     _opening ||
                     (_controller?.busy ?? false))
                   const LinearProgressIndicator(minHeight: 1),
@@ -703,8 +739,9 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     canAutomate: _automation != null,
     onStop: _automation?.protects(block.id) == true ? _automation!.stop : null,
     automationStatus: _automation?.protects(block.id) == true
-        ? _automation!.preparingBlock == block.id ? 'Подготовка текста…'
-            : '${_automation!.state.label} · ${_automation!.state.position}/${_automation!.state.total}'
+        ? _automation!.preparingBlock == block.id
+              ? 'Подготовка текста…'
+              : '${_automation!.state.label} · ${_automation!.state.position}/${_automation!.state.total}'
         : null,
     onAction: (action) {
       switch (action) {

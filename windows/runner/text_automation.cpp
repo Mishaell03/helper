@@ -97,8 +97,8 @@ TextAutomation::TextAutomation(HWND window, flutter::BinaryMessenger* messenger,
       CancelCountdown();
     } else if (method == "setSpeed") {
       const auto* speed = call.arguments() ? std::get_if<int32_t>(call.arguments()) : nullptr;
-      if (!speed || *speed < 30 || *speed > 500) {
-        result->Error("automation_error", "Скорость должна быть от 30 до 500 символов в минуту.");
+      if (!speed || *speed < 300 || *speed > 2000) {
+        result->Error("automation_error", "Скорость должна быть от 300 до 2000 символов в минуту.");
         return;
       }
       speed_ = static_cast<UINT>(*speed);
@@ -160,12 +160,12 @@ bool TextAutomation::Start(const Map& args, std::string* error) {
   }
   const auto found = args.find(Value("text"));
   const auto* text = found == args.end() ? nullptr : std::get_if<std::string>(&found->second);
-  const int64_t speed = Integer(args, "speed", 180);
+  const int64_t speed = Integer(args, "speed", 1000);
   const int64_t block = Integer(args, "blockId", 0);
   if (!text || text->empty() || text->find('\0') != std::string::npos || block <= 0 ||
       text->size() > static_cast<size_t>((std::numeric_limits<int>::max)()) ||
-      speed < 30 || speed > 500) {
-    *error = "Нужен непустой Unicode-текст без нулевых символов и скорость 30–500 символов/мин.";
+      speed < 300 || speed > 2000) {
+    *error = "Нужен непустой Unicode-текст без нулевых символов и скорость 300–2000 символов/мин.";
     return false;
   }
   const int bytes = static_cast<int>(text->size());

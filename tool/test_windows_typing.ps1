@@ -41,7 +41,7 @@ $fixture = Join-Path $directory 'automation-test.md'
 [IO.File]::WriteAllText($fixture, "# Automation test`n" + [TypingProbe]::Sample,
     (New-Object Text.UTF8Encoding($false)))
 Write-Output "Import this file in Helper and SELECT its block: $fixture"
-Write-Output 'Set typing speed to 180 CPM or faster. Ensure emergency Stop has no registration conflict.'
+Write-Output 'Set typing speed to 300 CPM or faster. Ensure emergency Stop has no registration conflict.'
 Write-Output 'Stop any existing task before this test; its first action is an emergency Stop.'
 [void](Read-Host 'Press Enter AFTER importing and selecting the test block')
 [TypingProbe]::Hotkey(0x77)
