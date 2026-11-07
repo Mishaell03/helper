@@ -1,13 +1,29 @@
 # helper
 
-A new Flutter project.
+Прозрачное фоновое Flutter-приложение для Windows с интерфейсом на русском языке.
+
+## Markdown-помощник
+
+Компактная панель по образцу истории буфера обмена Windows: импорт `.md` / `.txt`
+кнопкой **+**, карточки с закреплением и меню, полный выделяемый текст, копирование
+и настройки с вкладками. Название приложения в панели не показывается.
+
+Стрелки ↑ / ↓ выбирают блок, Enter открывает его, Esc возвращает назад,
+Ctrl+C в списке копирует весь текст выбранного блока. Данные и закрепление
+сохраняются локально в SQLite. Обычная очистка не удаляет закреплённое;
+полное удаление требует отдельного подтверждения.
+
+Формат импорта, расположение данных, правила удаления, ограничения и план
+проверки OBS: [docs/markdown-helper.md](docs/markdown-helper.md).
 
 ## Прозрачное окно Windows
 
 На Windows фон окна полностью прозрачный, стандартная рамка и тень отключены,
 а окно закреплено поверх остальных обычных окон. Панели имеют скругление 20 px
 и непрозрачность фона 50%; текст и кнопки остаются непрозрачными.
-Перетаскивание — за заголовок Helper; справа — сворачивание и закрытие.
+Перетаскивание — за ручку в верхней части панели; справа — скрытие окна.
+Края и углы окна позволяют изменять размер (360 × 300 — 1600 × 1200 логических
+пикселей). Размер сохраняется между запусками; фон и панели остаются прозрачными.
 
 Запуск на Windows (Windows 10 1803+ / Windows 11):
 
@@ -39,16 +55,28 @@ flutter run -d windows
   `flutter build windows` или остановите приложение и запустите
   `flutter run -d windows` заново.
 
-## Getting Started
+## Фоновая работа и настройки Windows
 
-This project is a starting point for a Flutter application.
+- Ctrl + Shift + F12 — показать / скрыть приложение.
+- Ctrl + Shift + F4 — полностью выйти. X и Alt + F4 только скрывают окно.
+- Шестерёнка → «Горячие клавиши»: запись сочетаний, проверка конфликтов,
+  сохранение без перезапуска и восстановление значений по умолчанию.
+- «Запускать вместе с Windows»: автозапуск для текущего пользователя через
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, значение
+  `Helper.Background`. Команда содержит полный путь в кавычках и `--background`,
+  поэтому при входе в Windows окно не показывается. Права администратора не нужны.
+- Окно использует `WS_EX_TOOLWINDOW` без `WS_EX_APPWINDOW`; приложение остаётся
+  обычным пользовательским процессом `helper.exe`, без значка панели задач.
+- Один экземпляр на сеанс Windows; повторный обычный запуск показывает существующее
+  окно, не создавая второй движок Flutter.
+- Сочетания сохраняются в `HKCU\Software\Helper\Hotkeys\BindingsV1`, размеры —
+  в `HKCU\Software\Helper\Window\SizeV1`. Ранее сохранённые назначения сохраняются;
+  чтобы заменить старое сочетание выхода F11 новым F4, восстановите значения
+  по умолчанию или измените его вручную.
+- Нет таймера опроса: команды поступают через сообщения Win32. Hotkey-регистрации
+  освобождаются при завершении; дочерние процессы ограничены Windows Job Object.
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+План реальной проверки на Windows и PowerShell-сценарий:
+[docs/windows-testing.md](docs/windows-testing.md). В окружении macOS Win32-проверки
+не выполнялись. Недоступные/зарезервированные сочетания не считаются рабочими:
+при конфликте выводится сообщение на русском, прежние назначения сохраняются.
