@@ -8,6 +8,7 @@ import 'markdown/markdown_controller.dart';
 import 'markdown/markdown_panel.dart';
 import 'platform.dart';
 import 'panel_theme.dart';
+import 'automation/text_automation.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,10 +49,11 @@ Future<void> main() async {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key, this.controller, this.pickFiles});
+  const MyApp({super.key, this.controller, this.pickFiles, this.automation});
 
   final MarkdownController? controller;
   final Future<List<String>> Function()? pickFiles;
+  final TextAutomationController? automation;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -61,6 +63,10 @@ class MyApp extends StatelessWidget {
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     debugShowCheckedModeBanner: false,
     theme: buildPanelTheme(),
-    home: MarkdownPanel(controller: controller, pickFiles: pickFiles),
+    home: MarkdownPanel(
+      controller: controller,
+      pickFiles: pickFiles,
+      automation: automation,
+    ),
   );
 }

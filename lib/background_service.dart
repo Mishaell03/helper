@@ -8,6 +8,9 @@ class Hotkey {
 
   static const defaultToggle = Hotkey(6, 0x7b);
   static const defaultExit = Hotkey(6, 0x73);
+  static const defaultStart = Hotkey(6, 0x75);
+  static const defaultPause = Hotkey(6, 0x76);
+  static const defaultStop = Hotkey(6, 0x77);
   final int modifiers; // Win32 MOD_ALT=1, CONTROL=2, SHIFT=4, WIN=8.
   final int key; // Win32 virtual key, not a Flutter key ID.
 
@@ -136,10 +139,31 @@ class Hotkey {
   };
 }
 
+enum HotkeyAction {
+  toggle('Показать / скрыть приложение', Hotkey.defaultToggle),
+  exit('Полностью выйти из приложения', Hotkey.defaultExit),
+  start('Начать автоматический ввод', Hotkey.defaultStart),
+  pause('Пауза / продолжение ввода', Hotkey.defaultPause),
+  stop('Остановить ввод (аварийная остановка)', Hotkey.defaultStop);
+
+  const HotkeyAction(this.label, this.defaultKey);
+  final String label;
+  final Hotkey defaultKey;
+}
+
 class BackgroundSettings {
   BackgroundSettings.fromMap(Map<Object?, Object?> map)
     : toggle = Hotkey.fromMap(map['toggle'] as Map<Object?, Object?>),
       exit = Hotkey.fromMap(map['exit'] as Map<Object?, Object?>),
+      start = map['start'] == null
+          ? Hotkey.defaultStart
+          : Hotkey.fromMap(map['start'] as Map<Object?, Object?>),
+      pause = map['pause'] == null
+          ? Hotkey.defaultPause
+          : Hotkey.fromMap(map['pause'] as Map<Object?, Object?>),
+      stop = map['stop'] == null
+          ? Hotkey.defaultStop
+          : Hotkey.fromMap(map['stop'] as Map<Object?, Object?>),
       active = map['active'] as bool,
       warning = map['warning'] as String,
       autostart = map['autostart'] as bool,
@@ -147,6 +171,16 @@ class BackgroundSettings {
 
   final Hotkey toggle;
   final Hotkey exit;
+  final Hotkey start;
+  final Hotkey pause;
+  final Hotkey stop;
+  Hotkey hotkey(HotkeyAction action) => switch (action) {
+    HotkeyAction.toggle => toggle,
+    HotkeyAction.exit => exit,
+    HotkeyAction.start => start,
+    HotkeyAction.pause => pause,
+    HotkeyAction.stop => stop,
+  };
   final bool active;
   final String warning;
   final bool autostart;
@@ -175,19 +209,31 @@ class BackgroundService {
     (await _channel.invokeMapMethod<Object?, Object?>('getSettings'))!,
   );
 
-  Future<BackgroundSettings> save(Hotkey toggle, Hotkey exit) async {
-    if (toggle.modifiers == 0 || exit.modifiers == 0) {
+  Future<BackgroundSettings> save(
+    Hotkey toggle,
+    Hotkey exit, {
+    Hotkey? start,
+    Hotkey? pause,
+    Hotkey? stop,
+  }) async {
+    final keys = [toggle, exit, ?start, ?pause, ?stop];
+    if (keys.any((key) => key.modifiers == 0)) {
       throw const FormatException('Добавьте Ctrl, Alt, Shift или Win.');
     }
-    if (toggle.sameAs(exit)) {
-      throw const FormatException(
-        'Для двух действий нужны разные сочетания клавиш.',
-      );
+    for (var i = 0; i < keys.length; i++) {
+      if (keys.take(i).any(keys[i].sameAs)) {
+        throw const FormatException(
+          'Для разных действий нужны разные сочетания клавиш.',
+        );
+      }
     }
     return BackgroundSettings.fromMap(
       (await _channel.invokeMapMethod<Object?, Object?>('saveSettings', {
         'toggle': toggle.toMap(),
         'exit': exit.toMap(),
+        if (start != null) 'start': start.toMap(),
+        if (pause != null) 'pause': pause.toMap(),
+        if (stop != null) 'stop': stop.toMap(),
       }))!,
     );
   }

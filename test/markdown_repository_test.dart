@@ -1,20 +1,11 @@
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/markdown/markdown_controller.dart';
-import 'package:helper/markdown/markdown_parser.dart';
 import 'package:helper/markdown/markdown_repository.dart';
-import 'package:helper/markdown/models.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-ImportedDocument document(String filename, String text) => ImportedDocument(
-  filename: filename,
-  text: text,
-  bytes: Uint8List.fromList(utf8.encode(text)),
-  blocks: parseMarkdown(text),
-);
+import 'support/markdown_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

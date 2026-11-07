@@ -33,6 +33,20 @@ void main() {
           return null;
         });
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('helper/automation'), (
+          call,
+        ) async {
+          if (const ['getState', 'setSpeed', 'stop'].contains(call.method)) {
+            return {
+              'phase': 'idle',
+              'speed': 180,
+              'revision': 0,
+              'stopToken': 0,
+            };
+          }
+          throw MissingPluginException();
+        });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('helper/background'), (
           call,
         ) async {
@@ -56,6 +70,11 @@ void main() {
     await directory.delete(recursive: true);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('helper/automation'),
+          null,
+        );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('helper/background'),

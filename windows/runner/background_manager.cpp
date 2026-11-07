@@ -12,7 +12,10 @@
 
 namespace {
 constexpr wchar_t kSettingsPath[] = L"Software\\Helper\\Hotkeys";
-constexpr wchar_t kSettingsValue[] = L"BindingsV1";
+constexpr wchar_t kSettingsValue[] = L"BindingsV2";
+constexpr std::array<const char*, 5> kActionNames = {"toggle", "exit", "start", "pause", "stop"};
+constexpr std::array<const char*, 5> kActionLabels = {
+    "Показать / скрыть", "Выход", "Начать ввод", "Пауза / продолжение", "Остановить ввод"};
 constexpr wchar_t kWindowPath[] = L"Software\\Helper\\Window";
 constexpr wchar_t kRunPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValue[] = L"Helper.Background";
@@ -35,36 +38,69 @@ BackgroundManager::BackgroundManager(HWND window,
     : window_(window), start_hidden_(start_hidden) {
   placement_.length = sizeof(placement_);
   ApplyStyles();
-  std::array<Shortcut, 2> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
-                                     {MOD_CONTROL | MOD_SHIFT, VK_F4}}};
-  DWORD data[4]{};
+  std::array<Shortcut, kActionCount> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
+      {MOD_CONTROL | MOD_SHIFT, VK_F4}, {MOD_CONTROL | MOD_SHIFT, VK_F6},
+      {MOD_CONTROL | MOD_SHIFT, VK_F7}, {MOD_CONTROL | MOD_SHIFT, VK_F8}}};
+  DWORD data[kActionCount * 2]{};
   DWORD size = sizeof(data);
   const LSTATUS read = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath,
       kSettingsValue, RRF_RT_REG_BINARY, nullptr, data, &size);
-  if (read == ERROR_SUCCESS && size == sizeof(data) &&
-      Valid({data[0], data[1]}) && Valid({data[2], data[3]}) &&
-      !(Shortcut{data[0], data[1]} == Shortcut{data[2], data[3]})) {
-    shortcuts = {{{data[0], data[1]}, {data[2], data[3]}}};
-  } else if (read != ERROR_FILE_NOT_FOUND && read != ERROR_PATH_NOT_FOUND) {
-    startup_error_ += "Не удалось прочитать сочетания клавиш. Используются настройки по умолчанию. ";
+  auto saved = shortcuts;
+  bool loaded = false;
+  if (read == ERROR_SUCCESS && size == sizeof(data)) {
+    for (size_t i = 0; i < saved.size(); ++i) saved[i] = {data[i * 2], data[i * 2 + 1]};
+    loaded = ValidAll(saved);
+  }
+  if (loaded) {
+    shortcuts = saved;
+  } else {
+    // Preserve the existing user's two shortcuts; never silently overwrite them
+    // when introducing the three automation actions.
+    DWORD legacy[4]{};
+    DWORD bytes = sizeof(legacy);
+    const LSTATUS old = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath, L"BindingsV1",
+        RRF_RT_REG_BINARY, nullptr, legacy, &bytes);
+    const bool legacy_valid = old == ERROR_SUCCESS && bytes == sizeof(legacy) &&
+        Valid({legacy[0], legacy[1]}) && Valid({legacy[2], legacy[3]}) &&
+        !(Shortcut{legacy[0], legacy[1]} == Shortcut{legacy[2], legacy[3]});
+    if (legacy_valid) {
+      shortcuts[0] = {legacy[0], legacy[1]};
+      shortcuts[1] = {legacy[2], legacy[3]};
+    }
+    if ((read != ERROR_FILE_NOT_FOUND && read != ERROR_PATH_NOT_FOUND) ||
+        (old != ERROR_SUCCESS && old != ERROR_FILE_NOT_FOUND && old != ERROR_PATH_NOT_FOUND) ||
+        (old == ERROR_SUCCESS && !legacy_valid)) {
+      startup_error_ += "Не удалось прочитать все сочетания клавиш. Проверьте настройки. ";
+    }
   }
   // At startup, retain each available action independently: a conflict on the
   // visibility shortcut must not disable an otherwise available exit shortcut.
   // Reconfiguration below remains transactional and preserves the old pair.
   for (size_t i = 0; i < bindings_.size(); ++i) {
     bindings_[i].shortcut = shortcuts[i];
+    bool duplicate = false;
+    for (size_t j = 0; j < i; ++j) if (shortcuts[i] == shortcuts[j]) duplicate = true;
+    if (duplicate) {
+      startup_error_ += std::string("Сочетание «") + kActionLabels[i] +
+          "» совпадает с прежним назначением. Выберите другое сочетание. ";
+      continue;
+    }
     const int id = static_cast<int>(i) + 1;
     if (RegisterHotKey(window_, id, shortcuts[i].modifiers | MOD_NOREPEAT,
                        shortcuts[i].key)) {
       bindings_[i].id = id;
     } else {
-      startup_error_ += WinError(i == 0
-          ? "Сочетание для показа и скрытия занято или зарезервировано Windows. Выберите другое"
-          : "Сочетание для выхода занято или зарезервировано Windows. Выберите другое",
-          GetLastError()) + ". ";
+      const DWORD error = GetLastError();
+      const std::string label = std::string("Сочетание «") + kActionLabels[i] +
+          "» занято или зарезервировано Windows. Выберите другое";
+      startup_error_ += WinError(label.c_str(), error) + ". ";
     }
   }
   LoadAutostart();
+  automation_ = std::make_unique<TextAutomation>(window_, messenger,
+      [this](UINT key) { return IsControlHotkey(key); },
+      [this]() { return bindings_[4].id != 0; },
+      [this]() { return ShowCountdownInactive(); });
 
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/background", &flutter::StandardMethodCodec::GetInstance());
@@ -90,13 +126,21 @@ BackgroundManager::BackgroundManager(HWND window,
       if (directory) CoTaskMemFree(directory);
     } else if (method == "saveSettings") {
       const auto* map = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
-      std::array<Shortcut, 2> shortcuts{};
+      std::array<Shortcut, kActionCount> shortcuts{};
+      for (size_t i = 0; i < shortcuts.size(); ++i) shortcuts[i] = bindings_[i].shortcut;
       if (!map || map->count(Value("toggle")) == 0 ||
           map->count(Value("exit")) == 0 ||
           !ReadShortcut(map->at(Value("toggle")), &shortcuts[0]) ||
           !ReadShortcut(map->at(Value("exit")), &shortcuts[1])) {
         result->Error("invalid_hotkey", "Выберите Ctrl, Alt, Shift или Win и поддерживаемую клавишу.");
         return;
+      }
+      for (size_t i = 2; i < shortcuts.size(); ++i) {
+        const auto found = map->find(Value(kActionNames[i]));
+        if (found != map->end() && !ReadShortcut(found->second, &shortcuts[i])) {
+          result->Error("invalid_hotkey", "Некорректное сочетание клавиш автоматического ввода.");
+          return;
+        }
       }
       std::string error;
       if (!Apply(shortcuts, true, &error)) {
@@ -112,6 +156,7 @@ BackgroundManager::BackgroundManager(HWND window,
         return;
       }
       recording_ = *enabled;
+      if (recording_) automation_->Pause("Запись горячей клавиши. Ввод приостановлен.");
       result->Success();
     } else if (method == "setAutostart") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
@@ -152,6 +197,7 @@ BackgroundManager::BackgroundManager(HWND window,
 }
 
 BackgroundManager::~BackgroundManager() {
+  automation_.reset();
   if (prepared_) SaveSize();
   channel_->SetMethodCallHandler(nullptr);
   for (const auto& binding : bindings_) {
@@ -186,15 +232,34 @@ bool BackgroundManager::ReadShortcut(const Value& value, Shortcut* shortcut) {
   return Valid(*shortcut);
 }
 
-bool BackgroundManager::Apply(const std::array<Shortcut, 2>& shortcuts,
-                              bool persist, std::string* error) {
-  if (!Valid(shortcuts[0]) || !Valid(shortcuts[1]) || shortcuts[0] == shortcuts[1]) {
+bool BackgroundManager::ValidAll(const std::array<Shortcut, kActionCount>& shortcuts) const {
+  for (size_t i = 0; i < shortcuts.size(); ++i) {
+    if (!Valid(shortcuts[i])) return false;
+    for (size_t j = 0; j < i; ++j) if (shortcuts[i] == shortcuts[j]) return false;
+  }
+  return true;
+}
+
+bool BackgroundManager::IsControlHotkey(UINT key) const {
+  UINT modifiers = 0;
+  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) modifiers |= MOD_CONTROL;
+  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) modifiers |= MOD_SHIFT;
+  if (GetAsyncKeyState(VK_MENU) & 0x8000) modifiers |= MOD_ALT;
+  if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000)) modifiers |= MOD_WIN;
+  return std::any_of(bindings_.begin(), bindings_.end(), [key, modifiers](const Binding& b) {
+    return b.id != 0 && b.shortcut.key == key && b.shortcut.modifiers == modifiers;
+  });
+}
+
+bool BackgroundManager::Apply(const std::array<Shortcut, kActionCount>& shortcuts,
+                               bool persist, std::string* error) {
+  if (!ValidAll(shortcuts)) {
     *error = "Сочетания должны различаться и содержать Ctrl, Alt, Shift или Win и поддерживаемую клавишу.";
     return false;
   }
   // Keep old registrations until BOTH new shortcuts and persistence succeed.
   // Reuse matching registrations, including when the two actions are swapped.
-  std::array<Binding, 2> next{};
+  std::array<Binding, kActionCount> next{};
   std::vector<int> acquired;
   auto rollback = [&]() {
     for (int id : acquired) UnregisterHotKey(window_, id);
@@ -211,10 +276,10 @@ bool BackgroundManager::Apply(const std::array<Shortcut, 2>& shortcuts,
            std::find(acquired.begin(), acquired.end(), id) != acquired.end()) ++id;
     if (!RegisterHotKey(window_, id, shortcuts[i].modifiers | MOD_NOREPEAT,
                         shortcuts[i].key)) {
-      *error = WinError(i == 0
-          ? "Сочетание для показа и скрытия недоступно: оно занято или зарезервировано Windows. Выберите другое"
-          : "Сочетание для выхода недоступно: оно занято или зарезервировано Windows. Выберите другое",
-                        GetLastError());
+      const DWORD code = GetLastError();
+      const std::string operation = std::string("Сочетание «") + kActionLabels[i] +
+          "» недоступно: занято или зарезервировано Windows. Выберите другое";
+      *error = WinError(operation.c_str(), code);
       rollback();
       return false;
     }
@@ -226,8 +291,11 @@ bool BackgroundManager::Apply(const std::array<Shortcut, 2>& shortcuts,
     LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsPath, 0, nullptr,
         0, KEY_SET_VALUE, nullptr, &key, nullptr);
     if (status == ERROR_SUCCESS) {
-      const DWORD data[] = {shortcuts[0].modifiers, shortcuts[0].key,
-                            shortcuts[1].modifiers, shortcuts[1].key};
+      DWORD data[kActionCount * 2]{};
+      for (size_t i = 0; i < shortcuts.size(); ++i) {
+        data[i * 2] = shortcuts[i].modifiers;
+        data[i * 2 + 1] = shortcuts[i].key;
+      }
       status = RegSetValueExW(key, kSettingsValue, 0, REG_BINARY,
           reinterpret_cast<const BYTE*>(data), sizeof(data));
       RegCloseKey(key);
@@ -239,7 +307,7 @@ bool BackgroundManager::Apply(const std::array<Shortcut, 2>& shortcuts,
     }
   }
   for (const auto& old : bindings_) {
-    if (old.id && old.id != next[0].id && old.id != next[1].id)
+    if (old.id && std::none_of(next.begin(), next.end(), [&old](const Binding& b) { return b.id == old.id; }))
       UnregisterHotKey(window_, old.id);
   }
   bindings_ = next;
@@ -251,12 +319,13 @@ BackgroundManager::Value BackgroundManager::State() const {
     return Value(Map{{Value("modifiers"), Value(static_cast<int32_t>(shortcut.modifiers))},
                      {Value("key"), Value(static_cast<int32_t>(shortcut.key))}});
   };
-  return Value(Map{{Value("toggle"), encode(bindings_[0].shortcut)},
-                   {Value("exit"), encode(bindings_[1].shortcut)},
-                   {Value("active"), Value(bindings_[0].id != 0 && bindings_[1].id != 0)},
+  Map state{{Value("active"), Value(std::all_of(bindings_.begin(), bindings_.end(),
+                     [](const Binding& b) { return b.id != 0; }))},
                    {Value("autostart"), Value(autostart_)},
                    {Value("startHidden"), Value(start_hidden_)},
-                   {Value("warning"), Value(startup_error_)}});
+                   {Value("warning"), Value(startup_error_)}};
+  for (size_t i = 0; i < bindings_.size(); ++i) state[Value(kActionNames[i])] = encode(bindings_[i].shortcut);
+  return Value(state);
 }
 
 bool BackgroundManager::ApplyStyles() {
@@ -317,6 +386,19 @@ HWND BackgroundManager::ImportDialogWindow() const {
   HWND window = nullptr;
   if (SUCCEEDED(import_dialog_.As(&ole_window))) ole_window->GetWindow(&window);
   return window;
+}
+
+bool BackgroundManager::ShowCountdownInactive() {
+  if (import_dialog_ || !ApplyStyles()) return false;
+  ExcludeFromCapture(window_);
+  // Unlike normal Show(), this must NOT activate Helper or steal the external
+  // editor's focus when Start/Resume was requested by a global hotkey.
+  ShowWindow(window_, IsIconic(window_) ? SW_SHOWNOACTIVATE : SW_SHOWNA);
+  if (!SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)) return false;
+  if (!IsWindowVisible(window_) || IsIconic(window_)) return false;
+  hidden_ = false;
+  return true;
 }
 
 void BackgroundManager::PickMarkdownFiles(
@@ -494,6 +576,8 @@ void BackgroundManager::SaveSize() {
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (automation_ && automation_->HandleMessage(message, wparam)) return true;
+  if (message == WM_ENDSESSION && wparam != 0) automation_->Stop(false);
   if (message == WM_GETMINMAXINFO) {
     auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
     const double scale = WindowScale(window_);
@@ -516,6 +600,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     return true;
   }
   if (message == WM_APP + 43) {
+    automation_->Stop(false);
     if (import_dialog_) {
       exit_requested_ = true;
       import_dialog_->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
@@ -534,13 +619,20 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
         modifiers != b.shortcut.modifiers || key != b.shortcut.key)
       continue;
     if (recording_ && GetForegroundWindow() == window_) {
+      if (i == 4) automation_->Stop();
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
           {Value("modifiers"), Value(static_cast<int32_t>(b.shortcut.modifiers))},
           {Value("key"), Value(static_cast<int32_t>(b.shortcut.key))}}));
     } else if (i == 0) {
       if (IsWindowVisible(window_) && !IsIconic(window_)) Hide(); else Show();
-    } else {
+    } else if (i == 1) {
       PostMessage(window_, WM_APP + 43, 0, 0);
+    } else if (i == 2) {
+      if (!import_dialog_) automation_->RequestStart();
+    } else if (i == 3) {
+      automation_->TogglePause();
+    } else {
+      automation_->Stop();
     }
     break;
   }

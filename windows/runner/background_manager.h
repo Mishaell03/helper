@@ -11,6 +11,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include "text_automation.h"
 
 // Also used by a second launch to activate the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
@@ -36,13 +37,17 @@ class BackgroundManager {
   };
   using Value = flutter::EncodableValue;
   using Map = flutter::EncodableMap;
-  bool Apply(const std::array<Shortcut, 2>& shortcuts, bool persist,
-             std::string* error);
+  static constexpr size_t kActionCount = 5;
+  bool Apply(const std::array<Shortcut, kActionCount>& shortcuts, bool persist,
+              std::string* error);
+  bool ValidAll(const std::array<Shortcut, kActionCount>& shortcuts) const;
+  bool IsControlHotkey(UINT key) const;
   bool ReadShortcut(const Value& value, Shortcut* shortcut);
   bool Valid(const Shortcut& shortcut) const;
   Value State() const;
   void Hide();
   bool Show();
+  bool ShowCountdownInactive();
   bool ApplyStyles();
   bool SetAutostart(bool enabled, std::string* error);
   void LoadAutostart();
@@ -60,9 +65,10 @@ class BackgroundManager {
   bool prepared_ = false;
   bool exit_requested_ = false;
   Microsoft::WRL::ComPtr<IFileOpenDialog> import_dialog_;
-  std::array<Binding, 2> bindings_{};
+  std::array<Binding, kActionCount> bindings_{};
   std::string startup_error_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;
+  std::unique_ptr<TextAutomation> automation_;
 };
 
 #endif

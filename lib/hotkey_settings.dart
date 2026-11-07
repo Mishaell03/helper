@@ -8,10 +8,12 @@ class HotkeySettings extends StatefulWidget {
     super.key,
     this.embedded = false,
     this.preferencesOnly = false,
+    this.scrollable = true,
   });
 
   final bool embedded;
   final bool preferencesOnly;
+  final bool scrollable;
 
   @override
   State<HotkeySettings> createState() => _HotkeySettingsState();
@@ -19,8 +21,9 @@ class HotkeySettings extends StatefulWidget {
 
 class _HotkeySettingsState extends State<HotkeySettings> {
   final _service = BackgroundService.instance;
-  Hotkey _toggle = Hotkey.defaultToggle;
-  Hotkey _exit = Hotkey.defaultExit;
+  List<Hotkey> _keys = HotkeyAction.values
+      .map((action) => action.defaultKey)
+      .toList();
   bool _busy = true;
   bool _autostart = false;
   String? _message;
@@ -38,8 +41,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       final settings = await _service.getSettings();
       if (!mounted) return;
       setState(() {
-        _toggle = settings.toggle;
-        _exit = settings.exit;
+        _keys = HotkeyAction.values.map(settings.hotkey).toList();
         _autostart = settings.autostart;
         _message = settings.warning.isEmpty ? null : settings.warning;
       });
@@ -57,11 +59,13 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       final settings = await _service.save(
         Hotkey.defaultToggle,
         Hotkey.defaultExit,
+        start: Hotkey.defaultStart,
+        pause: Hotkey.defaultPause,
+        stop: Hotkey.defaultStop,
       );
       if (!mounted) return;
       setState(() {
-        _toggle = settings.toggle;
-        _exit = settings.exit;
+        _keys = HotkeyAction.values.map(settings.hotkey).toList();
         _message = 'Сохранено. Глобальные горячие клавиши действуют.';
       });
     } catch (error) {
@@ -71,7 +75,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     }
   }
 
-  Future<void> _record(bool toggle) async {
+  Future<void> _record(HotkeyAction action) async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
@@ -83,14 +87,22 @@ class _HotkeySettingsState extends State<HotkeySettings> {
         context: context,
         barrierDismissible: false,
         builder: (_) => _Recorder(
-          onSave: (hotkey) =>
-              _service.save(toggle ? hotkey : _toggle, toggle ? _exit : hotkey),
+          onSave: (hotkey) {
+            final keys = [..._keys];
+            keys[action.index] = hotkey;
+            return _service.save(
+              keys[0],
+              keys[1],
+              start: keys[2],
+              pause: keys[3],
+              stop: keys[4],
+            );
+          },
         ),
       );
       if (mounted && settings != null) {
         setState(() {
-          _toggle = settings.toggle;
-          _exit = settings.exit;
+          _keys = HotkeyAction.values.map(settings.hotkey).toList();
           _message = 'Сохранено. Глобальные горячие клавиши действуют.';
         });
       }
@@ -139,17 +151,14 @@ class _HotkeySettingsState extends State<HotkeySettings> {
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 12),
-            const Text('Показать / скрыть приложение'),
-            OutlinedButton(
-              onPressed: _busy ? null : () => _record(true),
-              child: Text(_toggle.label),
-            ),
-            const SizedBox(height: 16),
-            const Text('Полностью выйти из приложения'),
-            OutlinedButton(
-              onPressed: _busy ? null : () => _record(false),
-              child: Text(_exit.label),
-            ),
+            for (final action in HotkeyAction.values) ...[
+              Text(action.label),
+              OutlinedButton(
+                onPressed: _busy ? null : () => _record(action),
+                child: Text(_keys[action.index].label),
+              ),
+              const SizedBox(height: 12),
+            ],
             const SizedBox(height: 16),
             const Text(
               'Нажмите на сочетание, чтобы записать новое: Ctrl, Alt, Shift '
@@ -187,7 +196,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     if (widget.embedded) {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: content,
+        child: widget.scrollable ? content : content.child!,
       );
     }
     return PopScope(

@@ -9,6 +9,8 @@ import '../hotkey_settings.dart';
 import '../platform.dart';
 import '../panel_theme.dart';
 import '../window_resize_border.dart';
+import '../automation/text_automation.dart';
+import '../automation/automation_controls.dart';
 import 'block_card.dart';
 import 'markdown_controller.dart';
 import 'markdown_repository.dart';
@@ -20,10 +22,16 @@ enum _SettingsTab { files, hotkeys, preferences }
 
 /// Every view is Flutter content inside the same capture-excluded native HWND.
 class MarkdownPanel extends StatefulWidget {
-  const MarkdownPanel({super.key, this.controller, this.pickFiles});
+  const MarkdownPanel({
+    super.key,
+    this.controller,
+    this.pickFiles,
+    this.automation,
+  });
 
   final MarkdownController? controller;
   final Future<List<String>> Function()? pickFiles;
+  final TextAutomationController? automation;
 
   @override
   State<MarkdownPanel> createState() => _MarkdownPanelState();
@@ -33,6 +41,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   final _focus = FocusNode(debugLabel: 'Блоки');
   final _scroll = ScrollController();
   MarkdownController? _controller;
+  TextAutomationController? _automation;
   _View _view = _View.blocks;
   _SettingsTab _tab = _SettingsTab.files;
   ContentBlock? _opened;
@@ -81,6 +90,14 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       _controller = controller;
       controller.addListener(_changed);
       _changed();
+      if (isWindows || widget.automation != null) {
+        _automation =
+            widget.automation ??
+            TextAutomationController(controller.repository);
+        _automation!.onStartRequested = _startSelected;
+        _automation!.addListener(_automationChanged);
+        await _automation!.initialize();
+      }
     } catch (error) {
       if (widget.controller == null && controller != null) {
         controller.dispose();
@@ -89,6 +106,55 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       if (mounted) setState(() => _loadError = markdownError(error));
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _automationChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _startSelected() async {
+    final id = _opened?.id ?? _selected;
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+    if (_busy || id == null) {
+      _notify(
+        'Сначала выберите текстовый блок и дождитесь завершения операции.',
+      );
+      return;
+    }
+    await _startBlock(id);
+  }
+
+  Future<void> _exitApplication() => _run(() async {
+    await _automation?.stop();
+    await _automation?.flushPreferences();
+    await BackgroundService.instance.exit();
+  });
+
+  Future<void> _startBlock(int id) async {
+    if (_automation == null) return;
+    if (!_automation!.canStart) {
+      _notify(
+        'Сначала остановите текущий ввод или продолжите его с сохранённой позиции.',
+      );
+      return;
+    }
+    await _automation!.start(id);
+  }
+
+  bool _guardDelete(Iterable<BlockSummary> blocks) {
+    if (blocks.any((block) => _automation?.protects(block.id) ?? false)) {
+      _notify(
+        'Сначала остановите автоматический ввод этого блока. Его текст и позиция пока сохранены.',
+      );
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _deleteBlock(BlockSummary block) async {
+    if (!_guardDelete([block])) {
+      await _run(() => _controller!.deleteBlock(block.id));
     }
   }
 
@@ -124,9 +190,14 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   void _notify(String message) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
+    final keepStopVisible =
+        _automation?.state.engaged == true ||
+        _automation?.commandPending == true;
     messenger.removeCurrentSnackBar();
     messenger.showSnackBar(
       SnackBar(
+        behavior: keepStopVisible ? SnackBarBehavior.floating : null,
+        margin: keepStopVisible ? const EdgeInsets.fromLTRB(8, 0, 8, 76) : null,
         content: Text(message),
         duration: const Duration(seconds: 3),
         action: SnackBarAction(
@@ -324,6 +395,11 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   Future<void> _clear({bool all = false}) async {
     if (_busy || _controller == null) return;
+    if (_guardDelete(
+      _controller!.blocks.where((block) => all || !block.pinned),
+    )) {
+      return;
+    }
     if (!await _confirm(
       all ? 'Удалить всё содержимое?' : 'Очистить незакреплённое?',
       all
@@ -333,10 +409,20 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       return;
     }
     if (!mounted) return;
+    if (_guardDelete(
+      _controller!.blocks.where((block) => all || !block.pinned),
+    )) {
+      return;
+    }
     await _run(all ? _controller!.clearEverything : _controller!.clearUnpinned);
   }
 
   Future<void> _deleteFile(ImportedFile file) async {
+    if (_guardDelete(
+      _controller!.blocks.where((block) => block.fileId == file.id),
+    )) {
+      return;
+    }
     if (!await _confirm(
       'Удалить импортированный файл?',
       '«${file.filename}»: будут удалены все его блоки, в том числе закреплённые. Другие импорты не изменятся. Исходный файл на диске останется.',
@@ -350,6 +436,9 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   void dispose() {
     if (isWindows) BackgroundService.instance.onWarning = null;
     _controller?.removeListener(_changed);
+    _automation?.removeListener(_automationChanged);
+    if (_automation != null) _automation!.onStartRequested = null;
+    if (widget.automation == null) _automation?.dispose();
     if (widget.controller == null && _controller != null) {
       _controller!.dispose();
       unawaited(_controller!.repository.close());
@@ -394,6 +483,32 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                       ? _settings()
                       : _blockList(),
                 ),
+                if (_automation != null)
+                  AutomationStatusBar(
+                    controller: _automation!,
+                    title:
+                        _controller!.blocks
+                            .where(
+                              (block) => block.id == _automation!.state.blockId,
+                            )
+                            .firstOrNull
+                            ?.displayTitle ??
+                        'Автоматический ввод',
+                    onMessage: (message) => showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        scrollable: true,
+                        title: const Text('Состояние ввода'),
+                        content: Text(message),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Закрыть'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -496,6 +611,14 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           selected: _view == _View.settings && _tab == _SettingsTab.files,
         ),
         const Spacer(),
+        if (_automation != null)
+          _icon(
+            Icons.play_arrow,
+            'Начать ввод выбранного блока (через 5 с)',
+            !_busy && _selected != null && _automation!.canStart
+                ? _startSelected
+                : null,
+          ),
         _icon(Icons.add, 'Импортировать .md или .txt', _busy ? null : _import),
         _icon(
           Icons.settings_outlined,
@@ -577,6 +700,12 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     showDescriptions: _controller!.showDescriptions,
     enabled: !_busy,
     onOpen: () => _open(block),
+    canAutomate: _automation != null,
+    onStop: _automation?.protects(block.id) == true ? _automation!.stop : null,
+    automationStatus: _automation?.protects(block.id) == true
+        ? _automation!.preparingBlock == block.id ? 'Подготовка текста…'
+            : '${_automation!.state.label} · ${_automation!.state.position}/${_automation!.state.total}'
+        : null,
     onAction: (action) {
       switch (action) {
         case BlockAction.copy:
@@ -584,7 +713,9 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         case BlockAction.pin:
           _run(() => _controller!.pin(block));
         case BlockAction.delete:
-          _run(() => _controller!.deleteBlock(block.id));
+          _deleteBlock(block);
+        case BlockAction.type:
+          _startBlock(block.id);
       }
     },
   );
@@ -635,6 +766,11 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                     ],
                     const SizedBox(height: 12),
                   ],
+                  if (_automation != null)
+                    AutomationControls(
+                      controller: _automation!,
+                      blockId: block.id,
+                    ),
                   Text(
                     _source ? block.source : block.content,
                     key: const Key('fullBlockContent'),
@@ -797,7 +933,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     ],
   );
 
-  Widget _preferences() => Column(
+  Widget _preferences() => ListView(
+    padding: const EdgeInsets.symmetric(horizontal: 12),
     children: [
       SwitchListTile(
         dense: true,
@@ -807,21 +944,20 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             ? null
             : (value) => _run(() => _controller!.setShowDescriptions(value)),
       ),
+      if (_automation != null) TypingSpeedSettings(controller: _automation!),
       if (isWindows) ...[
-        const Expanded(
-          child: HotkeySettings(
-            key: ValueKey('preferencesSection'),
-            embedded: true,
-            preferencesOnly: true,
-          ),
+        const HotkeySettings(
+          key: ValueKey('preferencesSection'),
+          embedded: true,
+          preferencesOnly: true,
+          scrollable: false,
         ),
         TextButton.icon(
-          onPressed: () => _run(BackgroundService.instance.exit),
+          onPressed: _exitApplication,
           icon: const Icon(Icons.logout, size: 16),
           label: const Text('Выйти из приложения'),
         ),
-      ] else
-        const Spacer(),
+      ],
     ],
   );
 }

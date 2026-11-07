@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'models.dart';
 
-enum BlockAction { copy, pin, delete }
+enum BlockAction { copy, pin, delete, type }
 
 class BlockCard extends StatelessWidget {
   const BlockCard({
@@ -13,6 +13,9 @@ class BlockCard extends StatelessWidget {
     required this.enabled,
     required this.onOpen,
     required this.onAction,
+    this.onStop,
+    this.automationStatus,
+    this.canAutomate = false,
   });
 
   static const extent = 94.0;
@@ -22,6 +25,9 @@ class BlockCard extends StatelessWidget {
   final bool enabled;
   final VoidCallback onOpen;
   final ValueChanged<BlockAction> onAction;
+  final VoidCallback? onStop;
+  final String? automationStatus;
+  final bool canAutomate;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -75,6 +81,11 @@ class BlockCard extends StatelessWidget {
                             value: BlockAction.copy,
                             child: Text('Копировать'),
                           ),
+                          if (canAutomate)
+                            const PopupMenuItem(
+                              value: BlockAction.type,
+                              child: Text('Начать ввод…'),
+                            ),
                           PopupMenuItem(
                             value: BlockAction.pin,
                             child: Text(
@@ -104,23 +115,50 @@ class BlockCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: IconButton(
-                    visualDensity: VisualDensity.compact,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 28,
-                      height: 24,
+                Row(
+                  children: [
+                    Expanded(
+                      child: automationStatus == null
+                          ? const SizedBox.shrink()
+                          : Text(
+                              automationStatus!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white60,
+                                fontSize: 10,
+                              ),
+                            ),
                     ),
-                    padding: EdgeInsets.zero,
-                    iconSize: 15,
-                    tooltip: block.pinned ? 'Открепить' : 'Закрепить',
-                    onPressed: enabled ? () => onAction(BlockAction.pin) : null,
-                    icon: Icon(
-                      block.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                      color: block.pinned ? Colors.white : Colors.white60,
+                    if (onStop != null)
+                      IconButton(
+                        tooltip: 'Остановить ввод блока',
+                        onPressed: onStop,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 28,
+                          height: 24,
+                        ),
+                        padding: EdgeInsets.zero,
+                        icon: const Icon(Icons.stop, size: 16),
+                      ),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 28,
+                        height: 24,
+                      ),
+                      padding: EdgeInsets.zero,
+                      iconSize: 15,
+                      tooltip: block.pinned ? 'Открепить' : 'Закрепить',
+                      onPressed: enabled
+                          ? () => onAction(BlockAction.pin)
+                          : null,
+                      icon: Icon(
+                        block.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                        color: block.pinned ? Colors.white : Colors.white60,
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ],
             ),

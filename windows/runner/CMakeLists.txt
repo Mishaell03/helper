@@ -10,6 +10,7 @@ add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "background_manager.cpp"
   "capture_exclusion.cpp"
+  "text_automation.cpp"
   "main.cpp"
   "utils.cpp"
   "win32_window.cpp"

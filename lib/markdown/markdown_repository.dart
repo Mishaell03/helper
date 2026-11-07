@@ -191,4 +191,27 @@ class MarkdownRepository {
   }
 
   Future<void> close() => _database.close();
+  Future<int> typingSpeed() async {
+    final rows = await _database.query(
+      'preferences',
+      where: 'key = ?',
+      whereArgs: ['automation_cpm'],
+    );
+    final value = rows.isEmpty
+        ? null
+        : int.tryParse(rows.single['value'] as String);
+    return value != null && value >= 30 && value <= 500 ? value : 180;
+  }
+
+  Future<void> setTypingSpeed(int value) async {
+    if (value < 30 || value > 500) {
+      throw const FormatException(
+        'Скорость должна быть от 30 до 500 символов в минуту.',
+      );
+    }
+    await _database.insert('preferences', {
+      'key': 'automation_cpm',
+      'value': '$value',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
 }

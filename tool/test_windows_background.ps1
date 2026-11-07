@@ -72,7 +72,10 @@ $Executable = (Resolve-Path $Executable).Path
 if (Get-Process helper -ErrorAction SilentlyContinue) {
     throw 'Exit all Helper instances before running this test.'
 }
-$saved = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV1' -ErrorAction SilentlyContinue
+$saved = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV2' -ErrorAction SilentlyContinue
+if (-not $saved) {
+    $saved = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV1' -ErrorAction SilentlyContinue
+}
 if ($saved -and ([BitConverter]::ToUInt32($saved, 0) -ne 6 -or
                  [BitConverter]::ToUInt32($saved, 4) -ne 0x7b -or
                  [BitConverter]::ToUInt32($saved, 8) -ne 6 -or

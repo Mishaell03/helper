@@ -12,6 +12,9 @@ void main() {
   const channel = MethodChannel('helper/background');
   var toggle = Hotkey.defaultToggle;
   var exit = Hotkey.defaultExit;
+  var start = Hotkey.defaultStart;
+  var pause = Hotkey.defaultPause;
+  var stop = Hotkey.defaultStop;
   var autostart = false;
   var conflict = false;
   var autostartFailure = false;
@@ -22,6 +25,9 @@ void main() {
   Map<String, Object> state() => {
     'toggle': toggle.toMap(),
     'exit': exit.toMap(),
+    'start': start.toMap(),
+    'pause': pause.toMap(),
+    'stop': stop.toMap(),
     'active': true,
     'warning': '',
     'autostart': autostart,
@@ -31,6 +37,9 @@ void main() {
   setUp(() {
     toggle = Hotkey.defaultToggle;
     exit = Hotkey.defaultExit;
+    start = Hotkey.defaultStart;
+    pause = Hotkey.defaultPause;
+    stop = Hotkey.defaultStop;
     autostart = false;
     conflict = false;
     autostartFailure = false;
@@ -58,6 +67,15 @@ void main() {
               final args = call.arguments as Map<Object?, Object?>;
               toggle = Hotkey.fromMap(args['toggle'] as Map<Object?, Object?>);
               exit = Hotkey.fromMap(args['exit'] as Map<Object?, Object?>);
+              if (args['start'] != null) {
+                start = Hotkey.fromMap(args['start'] as Map<Object?, Object?>);
+              }
+              if (args['pause'] != null) {
+                pause = Hotkey.fromMap(args['pause'] as Map<Object?, Object?>);
+              }
+              if (args['stop'] != null) {
+                stop = Hotkey.fromMap(args['stop'] as Map<Object?, Object?>);
+              }
               return state();
             case 'setAutostart':
               if (autostartFailure) {
@@ -95,6 +113,9 @@ void main() {
     expect(Hotkey.defaultToggle.label, 'Ctrl + Shift + F12');
     expect(Hotkey.defaultExit.label, 'Ctrl + Shift + F4');
     expect(Hotkey.defaultExit.toMap(), {'modifiers': 6, 'key': 0x73});
+    expect(Hotkey.defaultStart.label, 'Ctrl + Shift + F6');
+    expect(Hotkey.defaultPause.label, 'Ctrl + Shift + F7');
+    expect(Hotkey.defaultStop.label, 'Ctrl + Shift + F8');
   });
 
   test('Одинаковые сочетания и отсутствие модификаторов отклоняются', () async {
@@ -121,13 +142,55 @@ void main() {
     expect(find.byType(FilledButton), findsNothing);
   });
 
+  testWidgets(
+    'Новая клавиша старта сохраняется, не меняя существующие назначения',
+    (tester) async {
+      toggle = const Hotkey(3, 0x78);
+      exit = const Hotkey(3, 0x7a);
+      await open(tester);
+      final button = find.text('Ctrl + Shift + F6');
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      ServicesBinding.instance.channelBuffers.push(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('recorded', {'modifiers': 3, 'key': 0x79}),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Сохранить'));
+      await tester.pumpAndSettle();
+      expect(start.sameAs(const Hotkey(3, 0x79)), isTrue);
+      expect(toggle.sameAs(const Hotkey(3, 0x78)), isTrue);
+      expect(exit.sameAs(const Hotkey(3, 0x7a)), isTrue);
+      expect(stop.sameAs(Hotkey.defaultStop), isTrue);
+      expect(saves, 1);
+    },
+  );
+
+  test('Нельзя назначить один хоткей старту и аварийной остановке', () async {
+    await expectLater(
+      BackgroundService.instance.save(
+        Hotkey.defaultToggle,
+        Hotkey.defaultExit,
+        start: Hotkey.defaultStop,
+        pause: Hotkey.defaultPause,
+        stop: Hotkey.defaultStop,
+      ),
+      throwsFormatException,
+    );
+    expect(saves, 0);
+  });
+
   testWidgets('Сохранение и конфликт отображаются по-русски', (tester) async {
     await open(tester);
     await tester.tap(find.text('Ctrl + Shift + F12'));
     await tester.pumpAndSettle();
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-    await tester.sendKeyEvent(LogicalKeyboardKey.f8);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f9);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await tester.pump();
@@ -145,7 +208,7 @@ void main() {
       find.text('Сохранено. Глобальные горячие клавиши действуют.'),
       findsOneWidget,
     );
-    expect(toggle.sameAs(const Hotkey(6, 0x77)), isTrue);
+    expect(toggle.sameAs(const Hotkey(6, 0x78)), isTrue);
     expect(recording, isFalse);
     expect(find.text('Нажмите сочетание клавиш'), findsNothing);
     expect(find.text('Сохранить'), findsNothing);
@@ -202,15 +265,15 @@ void main() {
     expect(recording, isTrue);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-    await tester.sendKeyEvent(LogicalKeyboardKey.f8);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f9);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await tester.pump();
-    expect(find.text('Ctrl + Shift + F8'), findsOneWidget);
+    expect(find.text('Ctrl + Shift + F9'), findsOneWidget);
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
     expect(recording, isFalse);
-    expect(toggle.sameAs(const Hotkey(6, 0x77)), isTrue);
+    expect(toggle.sameAs(const Hotkey(6, 0x78)), isTrue);
     expect(saves, 1);
     expect(find.text('Сохранить'), findsNothing);
   });
@@ -269,7 +332,7 @@ void main() {
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
     expect(
-      find.text('Для двух действий нужны разные сочетания клавиш.'),
+      find.text('Для разных действий нужны разные сочетания клавиш.'),
       findsOneWidget,
     );
     expect(saves, 0);
@@ -289,7 +352,7 @@ void main() {
       ServicesBinding.instance.channelBuffers.push(
         channel.name,
         const StandardMethodCodec().encodeMethodCall(
-          const MethodCall('recorded', {'modifiers': 6, 'key': 0x77}),
+          const MethodCall('recorded', {'modifiers': 6, 'key': 0x78}),
         ),
         (_) {},
       );
@@ -317,7 +380,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(saves, 1);
       expect(recording, isFalse);
-      expect(toggle.sameAs(const Hotkey(6, 0x77)), isTrue);
+      expect(toggle.sameAs(const Hotkey(6, 0x78)), isTrue);
       expect(find.text('Сохранить'), findsNothing);
     },
   );
