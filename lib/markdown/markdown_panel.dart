@@ -785,30 +785,30 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           child: SingleChildScrollView(
             key: ValueKey('content-${block.id}-$_source'),
             padding: const EdgeInsets.all(16),
-            child: SelectionArea(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (!_source) ...[
-                    Text(
-                      block.displayTitle,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    if (block.description.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        block.description,
-                        style: const TextStyle(color: Colors.white60),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                  ],
-                  if (_automation != null)
-                    AutomationControls(
-                      controller: _automation!,
-                      blockId: block.id,
-                    ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (!_source) ...[
                   Text(
+                    block.displayTitle,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  if (block.description.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      block.description,
+                      style: const TextStyle(color: Colors.white60),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                ],
+                if (_automation != null)
+                  AutomationControls(
+                    controller: _automation!,
+                    blockId: block.id,
+                  ),
+                SelectionArea(
+                  child: Text(
                     _source ? block.source : block.content,
                     key: const Key('fullBlockContent'),
                     style: const TextStyle(
@@ -817,8 +817,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                       fontSize: 13,
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

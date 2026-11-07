@@ -121,6 +121,27 @@ void main() {
       await tester.tap(find.text('Тестовый блок'));
       await settle(tester);
       final slider = tester.widget<Slider>(find.byType(Slider));
+      final selection = find.byType(SelectionArea);
+      expect(selection, findsOneWidget);
+      expect(
+        find.descendant(
+          of: selection,
+          matching: find.byKey(const Key('fullBlockContent')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: selection, matching: find.text('Тестовый блок')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: selection, matching: find.byType(Slider)),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: selection, matching: find.byType(TextButton)),
+        findsNothing,
+      );
       expect(slider.min, 300);
       expect(slider.max, 2000);
       expect(slider.value, 1000);
