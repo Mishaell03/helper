@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include "typing_cadence.h"
 
 // Authoritative state machine on the Windows message thread. No worker thread
 // can enqueue keystrokes after Stop: at most ONE Unicode scalar is sent per tick.
@@ -46,7 +47,6 @@ class TextAutomation {
   void RemoveObservers();
   void SendNext();
   void Fail(const std::string& message);
-  UINT Interval() const;
   static LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam);
   static LRESULT CALLBACK MouseHook(int code, WPARAM wparam, LPARAM lparam);
   static TextAutomation* observer_;
@@ -73,6 +73,7 @@ class TextAutomation {
   uint64_t revision_ = 0;
   uint64_t stop_generation_ = 0;
   UINT speed_ = 1000;
+  TypingCadence cadence_{static_cast<uint32_t>(GetTickCount64()) ^ GetCurrentProcessId()};
   int countdown_ = 0;
   ULONGLONG deadline_ = 0;
   ULONGLONG last_guard_ = 0;

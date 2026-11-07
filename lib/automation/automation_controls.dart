@@ -17,6 +17,10 @@ class TypingSpeedSettings extends StatelessWidget {
           'Скорость: ${controller.speed} симв/мин',
           key: const Key('typingSpeed'),
         ),
+        const Text(
+          'Темп меняется, с короткими паузами; скорость — ориентир.',
+          style: TextStyle(color: Colors.white60, fontSize: 11),
+        ),
         SizedBox(
           height: 34,
           child: SliderTheme(

@@ -102,7 +102,7 @@ TextAutomation::TextAutomation(HWND window, flutter::BinaryMessenger* messenger,
         return;
       }
       speed_ = static_cast<UINT>(*speed);
-      if (phase_ == Phase::typing) Arm(Interval());
+      if (phase_ == Phase::typing) Arm(cadence_.Next(speed_));
       Notify();
     } else {
       result->NotImplemented();
@@ -192,6 +192,7 @@ bool TextAutomation::Start(const Map& args, std::string* error) {
   for (size_t i = 0; i < text_.size(); i += UnitLength(text_, i)) ++total_;
   block_id_ = block;
   speed_ = static_cast<UINT>(speed);
+  cadence_.Reset();
   const int seconds = Integer(args, "countdownSeconds", 5) == 1 ? 1 : 5;
   BeginCountdown(false, seconds);
   return true;
@@ -254,8 +255,6 @@ bool TextAutomation::Arm(UINT interval) {
   Fail("Не удалось создать таймер ввода. Код Win32: " + std::to_string(GetLastError()));
   return false;
 }
-
-UINT TextAutomation::Interval() const { return (60000u + speed_ / 2u) / speed_; }
 
 void TextAutomation::Pause(const std::string& reason) {
   if (phase_ != Phase::typing && phase_ != Phase::countdown) return;
@@ -416,7 +415,7 @@ void TextAutomation::Tick() {
     phase_ = Phase::typing;
     countdown_ = 0;
     message_ = "Ввод текста.";
-    if (!Arm(Interval())) return;
+    if (!Arm(cadence_.Next(speed_))) return;
     last_guard_ = GetTickCount64();
     if (SetTimer(window_, kGuardTimer, 100, nullptr) == 0) {
       Fail("Не удалось создать таймер контроля фокуса. Ввод не начат.");
@@ -471,6 +470,7 @@ void TextAutomation::SendNext() {
         : "Ввод выполнен частично. Проверьте поле вручную: автоматическое продолжение отключено, позиция последнего подтверждённого символа сохранена.");
     return;
   }
+  const wchar_t previous = text_[offset_];
   offset_ += length;
   ++position_;
   if (phase_ != Phase::typing) { Notify(); return; }
@@ -482,6 +482,7 @@ void TextAutomation::SendNext() {
     message_ = "Ввод завершён.";
     std::wstring().swap(text_);
   }
+  if (phase_ == Phase::typing && !Arm(cadence_.Next(speed_, previous))) return;
   Notify();
 }
 
