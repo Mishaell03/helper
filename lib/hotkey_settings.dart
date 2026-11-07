@@ -4,7 +4,14 @@ import 'package:flutter/services.dart';
 import 'background_service.dart';
 
 class HotkeySettings extends StatefulWidget {
-  const HotkeySettings({super.key});
+  const HotkeySettings({
+    super.key,
+    this.embedded = false,
+    this.preferencesOnly = false,
+  });
+
+  final bool embedded;
+  final bool preferencesOnly;
 
   @override
   State<HotkeySettings> createState() => _HotkeySettingsState();
@@ -15,6 +22,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
   Hotkey _toggle = Hotkey.defaultToggle;
   Hotkey _exit = Hotkey.defaultExit;
   bool _busy = true;
+  bool _autostart = false;
   String? _message;
 
   @override
@@ -23,9 +31,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     _load();
   }
 
-  String _error(Object error) => error is PlatformException
-      ? error.message ?? error.code
-      : error.toString();
+  String _error(Object error) => backgroundError(error);
 
   Future<void> _load() async {
     try {
@@ -34,6 +40,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       setState(() {
         _toggle = settings.toggle;
         _exit = settings.exit;
+        _autostart = settings.autostart;
         _message = settings.warning.isEmpty ? null : settings.warning;
       });
     } catch (error) {
@@ -54,7 +61,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       setState(() {
         _toggle = settings.toggle;
         _exit = settings.exit;
-        _message = 'Saved. Global hotkeys are active.';
+        _message = 'Сохранено. Глобальные горячие клавиши действуют.';
       });
     } catch (error) {
       if (mounted) setState(() => _message = _error(error));
@@ -82,7 +89,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
           } else {
             _exit = hotkey;
           }
-          _message = 'Unsaved changes. Press Save to apply.';
+          _message = 'Есть несохранённые изменения. Нажмите «Сохранить».';
         });
       }
     } catch (error) {
@@ -97,59 +104,114 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     }
   }
 
+  Future<void> _setAutostart(bool enabled) async {
+    setState(() => _busy = true);
+    try {
+      final settings = await _service.setAutostart(enabled);
+      if (mounted) {
+        setState(() {
+          _autostart = settings.autostart;
+          _message = enabled
+              ? 'Автозапуск включён. При входе в Windows окно будет скрыто.'
+              : 'Автозапуск отключён.';
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _message = _error(error));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => PopScope(
-    canPop: !_busy,
-    child: AlertDialog(
-      title: const Text('Hotkey Settings'),
-      content: SizedBox(
-        width: 440,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Toggle visibility'),
-              OutlinedButton(
-                onPressed: _busy ? null : () => _record(true),
-                child: Text(_toggle.label),
+  Widget build(BuildContext context) {
+    final content = SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!widget.preferencesOnly) ...[
+            Text(
+              'Горячие клавиши',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 12),
+            const Text('Показать / скрыть приложение'),
+            OutlinedButton(
+              onPressed: _busy ? null : () => _record(true),
+              child: Text(_toggle.label),
+            ),
+            const SizedBox(height: 16),
+            const Text('Полностью выйти из приложения'),
+            OutlinedButton(
+              onPressed: _busy ? null : () => _record(false),
+              child: Text(_exit.label),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Нажмите на сочетание, чтобы записать новое: Ctrl, Alt, Shift '
+              'или Win и другая клавиша. Доступность проверяется при сохранении. '
+              'Некоторые сочетания зарезервированы Windows. '
+              'Кнопка закрытия главного окна только скрывает приложение.',
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: _busy ? null : () => _save(defaults: true),
+              child: const Text('Восстановить настройки по умолчанию'),
+            ),
+          ],
+          if (!widget.embedded || widget.preferencesOnly) ...[
+            if (!widget.preferencesOnly) const Divider(),
+            Text('Автозапуск', style: Theme.of(context).textTheme.titleMedium),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Запускать вместе с Windows'),
+              subtitle: const Text(
+                'Запуск в фоне, без показа окна. Изменение сохраняется сразу.',
               ),
-              const SizedBox(height: 16),
-              const Text('Fully exit application'),
-              OutlinedButton(
-                onPressed: _busy ? null : () => _record(false),
-                child: Text(_exit.label),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Ctrl, Alt, Shift or Win + a key. Windows reserves some '
-                'combinations. Conflicts are checked when saving. '
-                'Closing the main window only hides it.',
-              ),
-              if (_message != null) ...[
-                const SizedBox(height: 12),
-                Text(_message!, key: const Key('hotkeyMessage')),
-              ],
-            ],
-          ),
-        ),
+              value: _autostart,
+              onChanged: _busy ? null : _setAutostart,
+            ),
+          ],
+          if (_message != null) ...[
+            const SizedBox(height: 12),
+            Text(_message!, key: const Key('hotkeyMessage')),
+          ],
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => _save(defaults: true),
-          child: const Text('Restore Defaults'),
+    );
+    final save = FilledButton(
+      onPressed: _busy ? null : () => _save(),
+      child: const Text('Сохранить'),
+    );
+    if (widget.embedded) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Column(
+          children: [
+            Expanded(child: content),
+            if (!widget.preferencesOnly)
+              Align(alignment: Alignment.centerRight, child: save),
+          ],
         ),
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.pop(context),
-          child: const Text('Close'),
-        ),
-        FilledButton(
-          onPressed: _busy ? null : () => _save(),
-          child: const Text('Save'),
-        ),
-      ],
-    ),
-  );
+      );
+    }
+    return PopScope(
+      canPop: !_busy,
+      child: AlertDialog(
+        title: const Text('Настройки приложения'),
+        insetPadding: const EdgeInsets.all(16),
+        content: SizedBox(width: 440, child: content),
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : () => Navigator.pop(context),
+            child: const Text('Закрыть'),
+          ),
+          save,
+        ],
+      ),
+    );
+  }
 }
 
 class _Recorder extends StatefulWidget {
@@ -174,7 +236,7 @@ class _RecorderState extends State<_Recorder> {
     if (!mounted) return;
     setState(() {
       _hotkey = key.modifiers == 0 ? null : key;
-      _error = key.modifiers == 0 ? 'Add Ctrl, Alt, Shift or Win.' : null;
+      _error = key.modifiers == 0 ? 'Добавьте Ctrl, Alt, Shift или Win.' : null;
     });
   }
 
@@ -200,18 +262,20 @@ class _RecorderState extends State<_Recorder> {
       return KeyEventResult.handled;
     },
     child: AlertDialog(
-      title: const Text('Press a key combination'),
-      content: Text(_error ?? _hotkey?.label ?? 'Waiting… (Escape to cancel)'),
+      title: const Text('Нажмите сочетание клавиш'),
+      content: Text(
+        _error ?? _hotkey?.label ?? 'Ожидание нажатия… Esc — отмена',
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
+          child: const Text('Отмена'),
         ),
         FilledButton(
           onPressed: _hotkey == null
               ? null
               : () => Navigator.pop(context, _hotkey),
-          child: const Text('Use shortcut'),
+          child: const Text('Использовать'),
         ),
       ],
     ),
