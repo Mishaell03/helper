@@ -525,11 +525,13 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     return true;
   }
   if (message != WM_HOTKEY) return false;
+  const UINT modifiers = static_cast<UINT>(LOWORD(lparam)) & 0x0fu;
+  const UINT key = static_cast<UINT>(HIWORD(lparam));
   // Ignore stale queued messages after reconfiguration.
   for (size_t i = 0; i < bindings_.size(); ++i) {
     const auto& b = bindings_[i];
     if (!b.id || wparam != static_cast<WPARAM>(b.id) ||
-        (LOWORD(lparam) & 0x0f) != b.shortcut.modifiers || HIWORD(lparam) != b.shortcut.key)
+        modifiers != b.shortcut.modifiers || key != b.shortcut.key)
       continue;
     if (recording_ && GetForegroundWindow() == window_) {
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
