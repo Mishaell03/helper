@@ -64,10 +64,10 @@ size_t UnitLength(const std::wstring& text, size_t offset) {
 TextAutomation* TextAutomation::observer_ = nullptr;
 
 TextAutomation::TextAutomation(HWND window, flutter::BinaryMessenger* messenger,
-    std::function<bool(UINT)> is_control_hotkey,
+    std::function<bool(UINT, UINT)> dispatch_control_hotkey,
     std::function<bool()> has_emergency_stop,
     std::function<bool()> show_countdown)
-    : window_(window), is_control_hotkey_(std::move(is_control_hotkey)),
+    : window_(window), dispatch_control_hotkey_(std::move(dispatch_control_hotkey)),
       has_emergency_stop_(std::move(has_emergency_stop)),
       show_countdown_(std::move(show_countdown)) {
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
@@ -192,7 +192,8 @@ bool TextAutomation::Start(const Map& args, std::string* error) {
   for (size_t i = 0; i < text_.size(); i += UnitLength(text_, i)) ++total_;
   block_id_ = block;
   speed_ = static_cast<UINT>(speed);
-  BeginCountdown(false);
+  const int seconds = Integer(args, "countdownSeconds", 5) == 1 ? 1 : 5;
+  BeginCountdown(false, seconds);
   return true;
 }
 
@@ -201,7 +202,7 @@ void TextAutomation::RequestStart() {
   channel_->InvokeMethod("startRequested", nullptr);
 }
 
-bool TextAutomation::Resume(std::string* error) {
+bool TextAutomation::Resume(std::string* error, int seconds) {
   if (phase_ != Phase::paused) {
     *error = "Продолжение доступно только после паузы.";
     return false;
@@ -218,32 +219,33 @@ bool TextAutomation::Resume(std::string* error) {
     Notify();
     return true;
   }
-  BeginCountdown(true);
+  BeginCountdown(true, seconds);
   return true;
 }
 
 void TextAutomation::TogglePause() {
   if (phase_ == Phase::paused) {
     std::string error;
-    if (!Resume(&error)) { message_ = error; Notify(); }
+    if (!Resume(&error, 1)) { message_ = error; Notify(); }
   } else {
     Pause();
   }
 }
 
-void TextAutomation::BeginCountdown(bool resume) {
+void TextAutomation::BeginCountdown(bool resume, int seconds) {
   KillTimer(window_, kTimer);
   RemoveObservers();
   resuming_ = resume;
-  countdown_ = 5;
+  countdown_ = seconds;
   phase_ = Phase::countdown;
-  message_ = resume ? "Верните фокус в прежнее поле. Продолжение через 5 секунд."
-                    : "Выберите поле другого приложения. Начало через 5 секунд.";
+  message_ = (resume ? "Верните фокус в прежнее поле. Продолжение через "
+                     : "Выберите поле другого приложения. Начало через ") +
+      std::to_string(seconds) + " с.";
   if (!show_countdown_()) {
     Fail("Не удалось показать окно с отсчётом. Ввод не начат.");
     return;
   }
-  deadline_ = GetTickCount64() + 5000;
+  deadline_ = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000;
   if (Arm(100)) Notify();
 }
 
@@ -326,12 +328,19 @@ bool TextAutomation::TargetStillFocused() const {
 }
 
 bool TextAutomation::ObserveInput() {
+  for (int key = 0; key < 256; ++key) {
+    physical_keys_[key] = Down(key);
+    release_passthrough_[key] = physical_keys_[key];
+  }
+  // LL hooks report left/right modifiers. Avoid stale aggregate states from
+  // GetAsyncKeyState when the start hotkey is still being released.
+  physical_keys_[VK_CONTROL] = physical_keys_[VK_SHIFT] = physical_keys_[VK_MENU] = false;
   observer_ = this;
   keyboard_hook_ = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHook, GetModuleHandle(nullptr), 0);
   mouse_hook_ = SetWindowsHookExW(WH_MOUSE_LL, MouseHook, GetModuleHandle(nullptr), 0);
   if (keyboard_hook_ && mouse_hook_) return true;
   RemoveObservers();
-  Fail("Не удалось включить наблюдение за ручным вводом. Автоматический ввод не начат.");
+  Fail("Не удалось включить защиту от ручного ввода. Автоматический ввод не начат.");
   return false;
 }
 
@@ -344,15 +353,37 @@ void TextAutomation::RemoveObservers() {
 }
 
 LRESULT CALLBACK TextAutomation::KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
-  if (code == HC_ACTION && observer_ && observer_->phase_ == Phase::typing &&
-      (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)) {
+  if (code == HC_ACTION && observer_ && observer_->phase_ == Phase::typing) {
     const auto* key = reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
-    if (key->dwExtraInfo != kOurInput && !Modifier(key->vkCode) &&
-        !observer_->is_control_hotkey_(key->vkCode)) {
-      observer_->Pause("Обнаружен ручной ввод. Автоматический ввод приостановлен.");
+    if (key->dwExtraInfo == kOurInput) {
+      return CallNextHookEx(nullptr, code, wparam, lparam);
     }
+    if (key->vkCode < 256) {
+      auto* self = observer_;
+      const UINT vk = key->vkCode;
+      const bool down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+      const bool was_down = self->physical_keys_[vk];
+      self->physical_keys_[vk] = down;
+      if (down && !was_down && !Modifier(vk)) {
+        const auto held = [self](int a, int b, int c) {
+          return self->physical_keys_[a] || self->physical_keys_[b] || self->physical_keys_[c];
+        };
+        UINT modifiers = 0;
+        if (held(VK_CONTROL, VK_LCONTROL, VK_RCONTROL)) modifiers |= MOD_CONTROL;
+        if (held(VK_SHIFT, VK_LSHIFT, VK_RSHIFT)) modifiers |= MOD_SHIFT;
+        if (held(VK_MENU, VK_LMENU, VK_RMENU)) modifiers |= MOD_ALT;
+        if (self->physical_keys_[VK_LWIN] || self->physical_keys_[VK_RWIN]) modifiers |= MOD_WIN;
+        self->dispatch_control_hotkey_(vk, modifiers);
+      }
+      // Let Windows release keys that were already down before the hook was
+      // installed. Otherwise a modifier could remain logically stuck.
+      if (!down && self->release_passthrough_[vk]) {
+        self->release_passthrough_[vk] = false;
+        return CallNextHookEx(nullptr, code, wparam, lparam);
+      }
+    }
+    return 1;  // Only our marked SendInput events pass during automation.
   }
-  // Observation only: never swallow, remap or block any user's input.
   return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 

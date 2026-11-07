@@ -95,7 +95,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         _automation =
             widget.automation ??
             TextAutomationController(controller.repository);
-        _automation!.onStartRequested = _startSelected;
+        _automation!.onStartRequested = () => _startSelected(fromHotkey: true);
         _automation!.addListener(_automationChanged);
         await _automation!.initialize();
       }
@@ -114,7 +114,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _startSelected() async {
+  Future<void> _startSelected({bool fromHotkey = false}) async {
     final id = _opened?.id ?? _selected;
     if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
     if (_busy || id == null) {
@@ -123,7 +123,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       );
       return;
     }
-    await _startBlock(id);
+    await _startBlock(id, fromHotkey: fromHotkey);
   }
 
   Future<void> _exitApplication() => _run(() async {
@@ -132,7 +132,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     await BackgroundService.instance.exit();
   });
 
-  Future<void> _startBlock(int id) async {
+  Future<void> _startBlock(int id, {bool fromHotkey = false}) async {
     if (_automation == null) return;
     if (!_automation!.canStart) {
       _notify(
@@ -140,7 +140,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       );
       return;
     }
-    await _automation!.start(id);
+    await _automation!.start(id, fromHotkey: fromHotkey);
   }
 
   bool _guardDelete(Iterable<BlockSummary> blocks) {

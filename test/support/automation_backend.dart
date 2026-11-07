@@ -79,7 +79,7 @@ class TestAutomationBackend extends AutomationBackend {
         data['speed'] = args['speed'];
         data['position'] = 0;
         data['total'] = receivedText!.runes.length;
-        data['countdown'] = 5;
+        data['countdown'] = args['countdownSeconds'] ?? 5;
         resuming = false;
         emit(AutomationPhase.countdown);
       case 'pause':

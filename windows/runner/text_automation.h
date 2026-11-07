@@ -7,6 +7,7 @@
 #include <flutter/method_channel.h>
 
 #include <cstdint>
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
@@ -16,7 +17,7 @@
 class TextAutomation {
  public:
   TextAutomation(HWND window, flutter::BinaryMessenger* messenger,
-                 std::function<bool(UINT)> is_control_hotkey,
+                 std::function<bool(UINT, UINT)> dispatch_control_hotkey,
                  std::function<bool()> has_emergency_stop,
                  std::function<bool()> show_countdown);
   ~TextAutomation();
@@ -33,8 +34,8 @@ class TextAutomation {
   Value Snapshot() const;
   void Notify();
   bool Start(const Map& arguments, std::string* error);
-  bool Resume(std::string* error);
-  void BeginCountdown(bool resume);
+  bool Resume(std::string* error, int seconds = 5);
+  void BeginCountdown(bool resume, int seconds);
   void CancelCountdown();
   bool Arm(UINT interval);
   void Tick();
@@ -57,7 +58,9 @@ class TextAutomation {
   HANDLE target_process_ = nullptr;
   HHOOK keyboard_hook_ = nullptr;
   HHOOK mouse_hook_ = nullptr;
-  std::function<bool(UINT)> is_control_hotkey_;
+  std::function<bool(UINT, UINT)> dispatch_control_hotkey_;
+  std::array<bool, 256> physical_keys_{};
+  std::array<bool, 256> release_passthrough_{};
   std::function<bool()> has_emergency_stop_;
   std::function<bool()> show_countdown_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;

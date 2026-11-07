@@ -83,7 +83,7 @@ function Start-Input {
 try {
     $targetForm.Show()
     Start-Input
-    Pump-For 4300
+    Pump-For 600
     if ($target.Text.Length -ne 0) { throw 'Text was inserted before the countdown finished.' }
     Wait-For { $target.Text.Length -ge 5 } 'Typing did not start. Check selected block, focus, hotkey conflicts and UIPI.'
     [TypingProbe]::Hotkey(0x76)
@@ -92,7 +92,7 @@ try {
     Pump-For 1500
     if ($target.Text -ne $paused) { throw 'Text changed while paused.' }
     [TypingProbe]::Hotkey(0x76)
-    Pump-For 4300
+    Pump-For 600
     if ($target.Text -ne $paused) { throw 'Resume did not provide a new countdown.' }
     Wait-For { $target.Text -eq [TypingProbe]::Sample } 'Resume did not preserve the Unicode text position or formatting.'
 
@@ -107,21 +107,19 @@ try {
     Wait-For { $target.Text -eq [TypingProbe]::Sample } 'Start after Stop did not restart from the beginning.'
 
     Start-Input
-    Pump-For 1000
+    Pump-For 300
     [TypingProbe]::Hotkey(0x77)
     Pump-For 5500
     if ($target.Text.Length -ne 0) { throw 'Stop during countdown still allowed text insertion.' }
 
     Start-Input
     Wait-For { $target.Text.Length -ge 3 } 'Manual input check did not start.'
-    [TypingProbe]::Key(0x20) # A real external input event; must not be swallowed.
+    [TypingProbe]::Key(0x5A) # External Z must be swallowed without pausing.
+    Wait-For { $target.Text -eq [TypingProbe]::Sample } 'Keyboard suppression failed or automation paused for unrelated input.'
+    [TypingProbe]::Key(0x5A)
     Pump-For 300
-    $manual = $target.Text
-    if (-not $manual.EndsWith(' ')) { throw 'The user space key did not reach the text field.' }
-    Pump-For 1500
-    if ($target.Text -ne $manual) { throw 'Automation did not pause for unrelated input.' }
-    [TypingProbe]::Hotkey(0x77)
-    Write-Output 'PASS: countdown, Unicode including emoji, CRLF paragraphs, spaces, tab, pause/resume, Stop, restart, and unrelated keyboard input.'
+    if (-not $target.Text.EndsWith('z', [StringComparison]::OrdinalIgnoreCase)) { throw 'Keyboard was not restored after completion.' }
+    Write-Output 'PASS: 1-second hotkey countdown, Unicode including emoji, CRLF paragraphs, spaces, tab, pause/resume, Stop, restart, keyboard suppression and restoration.'
     Write-Output 'Still test other editors, focus changes, elevated windows, shutdown, capture exclusion and your actual Windows 10/11 configuration.'
 } finally {
     [TypingProbe]::Hotkey(0x77)

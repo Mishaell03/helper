@@ -8,6 +8,7 @@ import 'markdown/markdown_controller.dart';
 import 'markdown/markdown_panel.dart';
 import 'platform.dart';
 import 'panel_theme.dart';
+import 'ordinary_cursor.dart';
 import 'automation/text_automation.dart';
 
 Future<void> main() async {
@@ -63,6 +64,7 @@ class MyApp extends StatelessWidget {
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     debugShowCheckedModeBanner: false,
     theme: buildPanelTheme(),
+    builder: (context, child) => OrdinaryCursor(child: child!),
     home: MarkdownPanel(
       controller: controller,
       pickFiles: pickFiles,

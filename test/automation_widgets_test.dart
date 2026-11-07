@@ -86,6 +86,12 @@ void main() {
       // This is the real Dart handler for a native global Start notification.
       backend.onStartRequested!();
       await settle(tester);
+      expect(automation.state.countdown, 1);
+      expect(
+        (backend.calls.lastWhere((call) => call.$1 == 'start').$2
+            as Map)['countdownSeconds'],
+        1,
+      );
       backend.emit(AutomationPhase.typing, position: 3);
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Пауза ввода'));

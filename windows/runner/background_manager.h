@@ -41,7 +41,7 @@ class BackgroundManager {
   bool Apply(const std::array<Shortcut, kActionCount>& shortcuts, bool persist,
               std::string* error);
   bool ValidAll(const std::array<Shortcut, kActionCount>& shortcuts) const;
-  bool IsControlHotkey(UINT key) const;
+  bool DispatchControlHotkey(UINT key, UINT modifiers) const;
   bool ReadShortcut(const Value& value, Shortcut* shortcut);
   bool Valid(const Shortcut& shortcut) const;
   Value State() const;

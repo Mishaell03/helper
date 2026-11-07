@@ -98,7 +98,7 @@ BackgroundManager::BackgroundManager(HWND window,
   }
   LoadAutostart();
   automation_ = std::make_unique<TextAutomation>(window_, messenger,
-      [this](UINT key) { return IsControlHotkey(key); },
+      [this](UINT key, UINT modifiers) { return DispatchControlHotkey(key, modifiers); },
       [this]() { return bindings_[4].id != 0; },
       [this]() { return ShowCountdownInactive(); });
 
@@ -240,15 +240,17 @@ bool BackgroundManager::ValidAll(const std::array<Shortcut, kActionCount>& short
   return true;
 }
 
-bool BackgroundManager::IsControlHotkey(UINT key) const {
-  UINT modifiers = 0;
-  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) modifiers |= MOD_CONTROL;
-  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) modifiers |= MOD_SHIFT;
-  if (GetAsyncKeyState(VK_MENU) & 0x8000) modifiers |= MOD_ALT;
-  if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000)) modifiers |= MOD_WIN;
-  return std::any_of(bindings_.begin(), bindings_.end(), [key, modifiers](const Binding& b) {
-    return b.id != 0 && b.shortcut.key == key && b.shortcut.modifiers == modifiers;
-  });
+bool BackgroundManager::DispatchControlHotkey(UINT key, UINT modifiers) const {
+  for (const auto& binding : bindings_) {
+    if (binding.id && binding.shortcut.key == key &&
+        binding.shortcut.modifiers == modifiers) {
+      // Blocked modifiers never reach RegisterHotKey. Dispatch the same native
+      // message ourselves; it is validated by HandleMessage as usual.
+      PostMessage(window_, WM_HOTKEY, binding.id, MAKELPARAM(modifiers, key));
+      return true;
+    }
+  }
+  return false;
 }
 
 bool BackgroundManager::Apply(const std::array<Shortcut, kActionCount>& shortcuts,

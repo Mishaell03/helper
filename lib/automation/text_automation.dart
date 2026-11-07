@@ -155,7 +155,7 @@ class TextAutomationController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> start(int blockId) async {
+  Future<void> start(int blockId, {bool fromHotkey = false}) async {
     if (!canStart) return;
     final generation = ++_generation;
     commandPending = true;
@@ -174,6 +174,7 @@ class TextAutomationController extends ChangeNotifier {
           'text': block.content,
           'speed': speed,
           'stopToken': state.stopToken,
+          'countdownSeconds': fromHotkey ? 1 : 5,
         }),
       );
     } catch (error) {

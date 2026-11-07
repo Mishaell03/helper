@@ -133,7 +133,7 @@ class AutomationControls extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           const Text(
-            'Перед вводом — 5 секунд, чтобы выбрать поле. Для абзацев нужно многострочное поле.',
+            'Кнопкой — через 5 с, горячей клавишей — через 1 с. Во время ввода клавиатура заблокирована, кроме хоткеев Helper. Для абзацев нужно многострочное поле.',
             style: TextStyle(color: Colors.white60, fontSize: 11),
           ),
           const Divider(),
