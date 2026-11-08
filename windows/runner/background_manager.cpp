@@ -32,6 +32,13 @@ double WindowScale(HWND window) {
 std::string WinError(const char* operation, DWORD error) {
   return std::string(operation) + " (Win32 " + std::to_string(error) + ")";
 }
+int64_t MapInteger(const flutter::EncodableMap& map, const char* name) {
+  const auto found = map.find(flutter::EncodableValue(name));
+  if (found == map.end()) return 0;
+  if (const auto* value = std::get_if<int32_t>(&found->second)) return *value;
+  if (const auto* value = std::get_if<int64_t>(&found->second)) return *value;
+  return 0;
+}
 }  // namespace
 
 BackgroundManager::BackgroundManager(HWND window,
@@ -116,6 +123,16 @@ BackgroundManager::BackgroundManager(HWND window,
       result->Success(State());
     } else if (method == "heartbeat") {
       if (watchdog_) watchdog_->DartPulse();
+      result->Success();
+    } else if (method == "blockStage") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      if (args && watchdog_) {
+        const int64_t stage = MapInteger(*args, "stage");
+        if (stage >= 1 && stage <= 5) {
+          watchdog_->SetStage(static_cast<int>(stage), MapInteger(*args, "blockId"),
+                              MapInteger(*args, "length"));
+        }
+      }
       result->Success();
     } else if (method == "getAppVersion") {
       result->Success(Value(FLUTTER_VERSION));

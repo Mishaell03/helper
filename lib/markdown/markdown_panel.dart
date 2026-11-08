@@ -16,6 +16,7 @@ import 'block_card.dart';
 import 'markdown_controller.dart';
 import 'markdown_repository.dart';
 import 'models.dart';
+import 'block_display.dart';
 
 enum _View { blocks, pinned, settings }
 
@@ -46,12 +47,15 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   _View _view = _View.blocks;
   _SettingsTab _tab = _SettingsTab.files;
   ContentBlock? _opened;
+  BlockDisplay? _display;
+  int _displayPage = 0;
   int? _selected;
   bool _source = false;
   bool _loading = true;
   bool _picking = false;
   bool _confirmingImport = false;
   bool _opening = false;
+  int _openGeneration = 0;
   bool _installingUpdate = false;
   String? _loadError;
   static const _cardExtent = BlockCard.extent;
@@ -241,9 +245,12 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   void _navigate(_View view, {_SettingsTab? tab}) {
+    ++_openGeneration;
     setState(() {
+      _opening = false;
       _view = view;
       _opened = null;
+      _display = null;
       if (tab != null) _tab = tab;
     });
     _changed();
@@ -329,20 +336,66 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   Future<void> _open(BlockSummary block) async {
     if (_busy || _controller == null) return;
+    final generation = ++_openGeneration;
     setState(() {
       _selected = block.id;
       _opening = true;
     });
+    _reportBlockStage(1, block.id);
     await _run(() async {
-      final full = await _controller!.repository.block(block.id);
-      if (!mounted) return;
-      setState(() {
-        _opened = full;
-        _source = false;
-      });
-      _focus.requestFocus();
+      try {
+        final full = await _controller!.repository
+            .block(block.id)
+            .timeout(
+              const Duration(seconds: 8),
+              onTimeout: () => throw const FormatException(
+                'Чтение блока заняло слишком долго. Попробуйте открыть его снова.',
+              ),
+            );
+        if (!mounted || generation != _openGeneration) return;
+        _reportBlockStage(2, block.id, length: full.content.length);
+        final display = await prepareBlockDisplay(full.content, full.source)
+            .timeout(
+              const Duration(seconds: 8),
+              onTimeout: () => throw const FormatException(
+                'Подготовка просмотра заняла слишком долго. Исходный текст сохранён.',
+              ),
+            );
+        if (!mounted || generation != _openGeneration) return;
+        setState(() {
+          _opened = full;
+          _display = display;
+          _displayPage = 0;
+          _source = false;
+        });
+        _reportBlockStage(3, block.id, length: full.content.length);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted &&
+              generation == _openGeneration &&
+              _opened?.id == block.id) {
+            _reportBlockStage(4, block.id);
+          }
+        });
+        _focus.requestFocus();
+      } catch (_) {
+        if (mounted && generation == _openGeneration) {
+          _reportBlockStage(5, block.id);
+          rethrow;
+        }
+      }
     });
-    if (mounted) setState(() => _opening = false);
+    if (mounted && generation == _openGeneration) {
+      setState(() => _opening = false);
+    }
+  }
+
+  void _reportBlockStage(int stage, int id, {int length = 0}) {
+    if (!isWindows) return;
+    unawaited(
+      BackgroundService.instance
+          .reportBlockStage(stage, id, length: length)
+          .catchError((Object _) {}),
+    );
   }
 
   Future<void> _copy(BlockSummary block, {bool source = false}) =>
@@ -359,8 +412,12 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       });
 
   void _back() {
+    ++_openGeneration;
     if (_opened != null) {
-      setState(() => _opened = null);
+      setState(() {
+        _opened = null;
+        _display = null;
+      });
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _ensureSelectionVisible(),
       );
@@ -489,6 +546,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   @override
   void dispose() {
+    ++_openGeneration;
     if (isWindows) BackgroundService.instance.onWarning = null;
     _controller?.removeListener(_changed);
     _automation?.removeListener(_automationChanged);
@@ -778,6 +836,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   Widget _fullContent() {
     final block = _opened!;
+    final pages = _source ? _display!.source : _display!.content;
+    final page = _displayPage.clamp(0, pages.length - 1);
     return Column(
       children: [
         Padding(
@@ -789,7 +849,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
               _icon(
                 Icons.code,
                 _source ? 'Показать содержимое' : 'Показать исходный блок',
-                () => setState(() => _source = !_source),
+                () => setState(() {
+                  _source = !_source;
+                  _displayPage = 0;
+                }),
                 selected: _source,
               ),
               TextButton.icon(
@@ -802,20 +865,24 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         ),
         Expanded(
           child: SingleChildScrollView(
-            key: ValueKey('content-${block.id}-$_source'),
+            key: ValueKey('content-${block.id}-$_source-$page'),
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (!_source) ...[
                   Text(
-                    block.displayTitle,
+                    block.displayTitle.length > 512
+                        ? '${block.displayTitle.substring(0, 512)}…'
+                        : block.displayTitle,
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   if (block.description.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Text(
-                      block.description,
+                      block.description.length > 2048
+                          ? '${block.description.substring(0, 2048)}…'
+                          : block.description,
                       style: const TextStyle(color: Colors.white60),
                     ),
                   ],
@@ -828,7 +895,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                   ),
                 SelectionArea(
                   child: Text(
-                    _source ? block.source : block.content,
+                    pages[page],
                     key: const Key('fullBlockContent'),
                     style: const TextStyle(
                       fontFamily: 'Consolas',
@@ -841,6 +908,35 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             ),
           ),
         ),
+        if (pages.length > 1)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Предыдущая страница текста',
+                  onPressed: page > 0
+                      ? () => setState(() => _displayPage = page - 1)
+                      : null,
+                  icon: const Icon(Icons.chevron_left),
+                ),
+                Expanded(
+                  child: Text(
+                    'Страница ${page + 1}/${pages.length}\nКопирование и ввод — весь текст',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Следующая страница текста',
+                  onPressed: page + 1 < pages.length
+                      ? () => setState(() => _displayPage = page + 1)
+                      : null,
+                  icon: const Icon(Icons.chevron_right),
+                ),
+              ],
+            ),
+          ),
       ],
     );
   }

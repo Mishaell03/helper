@@ -225,6 +225,48 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Большой блок открывается постранично, копирование не обрезается',
+    (tester) async {
+      final body = '${'A' * 8192}${'B' * 8192}${'C' * 5000}';
+      final source = '# Большой блок\n$body';
+      final input = await file(tester, 'large.txt', source);
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      await tester.tap(find.text('Большой блок'));
+      await settle(tester);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        'A' * 8192,
+      );
+      expect(find.textContaining('Страница 1/3'), findsOneWidget);
+      await tester.tap(find.byTooltip('Следующая страница текста'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        'B' * 8192,
+      );
+      await tester.tap(find.text('Копировать'));
+      await settle(tester);
+      expect(clipboard, body);
+      await tester.tap(find.byTooltip('Показать исходный блок'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Страница 1/3'), findsOneWidget);
+      await tester.tap(find.text('Копировать'));
+      await settle(tester);
+      expect(clipboard, source);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(tester);
+      await tester.tap(find.text('Большой блок'));
+      await settle(tester);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        'A' * 8192,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('Закрепление и обычная очистка сохраняют закреплённый блок', (
     tester,
   ) async {
