@@ -1,6 +1,7 @@
 #include "background_manager.h"
 #include "capture_exclusion.h"
 #include "window_composition.h"
+#include "capture_diagnostics.h"
 #include "utils.h"
 
 #include <flutter/standard_method_codec.h>
@@ -38,6 +39,7 @@ BackgroundManager::BackgroundManager(HWND window,
                                      bool start_hidden)
     : window_(window), visibility_(start_hidden), start_hidden_(start_hidden) {
   ApplyStyles();
+  TraceCapture("created", window_, hidden_, parking_.parked());
   std::array<Shortcut, kActionCount> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
       {MOD_CONTROL | MOD_SHIFT, VK_F4}, {MOD_CONTROL | MOD_SHIFT, VK_F6},
       {MOD_CONTROL | MOD_SHIFT, VK_F7}, {MOD_CONTROL | MOD_SHIFT, VK_F8}}};
@@ -381,26 +383,56 @@ bool BackgroundManager::PreparePresentation() {
   if (!ApplyStyles()) return false;
   const bool composition_changed = !composition_ready_;
   if (composition_changed) {
-    if (!ConfigureTransparentComposition(window_, &startup_error_)) return false;
+    if (!ConfigureTransparentComposition(window_, &startup_error_)) {
+      TraceCaptureFailure(startup_error_);
+      return false;
+    }
     composition_ready_ = true;
   }
   // Check before showing; never reveal a window after a failed protection call.
   if (!ExcludeFromCapture(window_, composition_changed)) {
     composition_ready_ = false;
     startup_error_ = "Не удалось исключить окно из захвата. Показ отменён.";
+    TraceCaptureFailure(startup_error_);
     return false;
   }
   return true;
 }
 
 void BackgroundManager::Hide() {
+  TraceCapture("hide.begin", window_, hidden_, parking_.parked());
   visibility_.Hide();
   if (hidden_) return;
   if (prepared_) SaveSize();
   hidden_ = true;
-  ShowWindow(window_, SW_HIDE);
+  if (UseStableCaptureSurface() && parking_.Park(window_)) {
+    TraceCapture("hide.parked", window_, hidden_, parking_.parked());
+    RestoreExternalFocus();
+  } else {
+    TraceCapture("hide.native", window_, hidden_, parking_.parked());
+    ShowWindow(window_, SW_HIDE);
+  }
   if (HWND dialog = ImportDialogWindow()) ShowWindow(dialog, SW_HIDE);
   FlushHiddenWindowComposition();
+  TraceCapture("hide.end", window_, hidden_, parking_.parked());
+}
+
+void BackgroundManager::RestoreExternalFocus() {
+  DWORD process = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &process);
+  if (process != GetCurrentProcessId()) return;
+  if (IsWindow(previous_foreground_) && IsWindowVisible(previous_foreground_) &&
+      !IsIconic(previous_foreground_) && IsWindowEnabled(previous_foreground_) &&
+      SetForegroundWindow(previous_foreground_)) return;
+  for (HWND next = GetWindow(window_, GW_HWNDNEXT); next; next = GetWindow(next, GW_HWNDNEXT)) {
+    DWORD owner = 0;
+    GetWindowThreadProcessId(next, &owner);
+    if (owner != GetCurrentProcessId() && IsWindowVisible(next) &&
+        !IsIconic(next) && IsWindowEnabled(next) &&
+        (GetWindowLongPtr(next, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) == 0 &&
+        SetForegroundWindow(next)) return;
+  }
+  SetForegroundWindow(GetShellWindow());
 }
 
 bool BackgroundManager::Show() {
@@ -408,11 +440,18 @@ bool BackgroundManager::Show() {
 }
 
 bool BackgroundManager::ShowWindowSafely(bool activate) {
+  TraceCapture("show.begin", window_, hidden_, parking_.parked());
   if (!PreparePresentation()) {
+    TraceCapture("show.prepare_failed", window_, hidden_, parking_.parked(), GetLastError());
     std::cerr << "Window presentation failed: " << startup_error_ << std::endl;
     return false;
   }
   visibility_.Reveal();
+  if (!parking_.Restore(window_)) {
+    TraceCapture("show.restore_failed", window_, hidden_, parking_.parked(), GetLastError());
+    visibility_.Hide();
+    return false;
+  }
   // SW_HIDE preserves the rectangle. SetWindowPlacement is unnecessary here
   // and can itself reveal/activate the window before the intended ShowWindow.
   if (!IsWindowVisible(window_) || IsIconic(window_)) {
@@ -422,14 +461,22 @@ bool BackgroundManager::ShowWindowSafely(bool activate) {
   }
   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
   if (hidden_) return false;
+  PostMessage(window_, kRefreshHelperFrame, 0, 0);
   RedrawWindow(window_, nullptr, nullptr,
       RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
-  if (activate) SetForegroundWindow(window_);
+  if (activate) {
+    HWND foreground = GetForegroundWindow();
+    DWORD owner = 0;
+    GetWindowThreadProcessId(foreground, &owner);
+    if (foreground && owner != GetCurrentProcessId()) previous_foreground_ = foreground;
+    SetForegroundWindow(window_);
+  }
   if (HWND dialog = ImportDialogWindow()) {
     if (!ExcludeFromCapture(dialog)) return false;
     ShowWindow(dialog, activate ? SW_SHOW : SW_SHOWNA);
     if (activate) SetForegroundWindow(dialog);
   }
+  TraceCapture("show.end", window_, hidden_, parking_.parked());
   return true;
 }
 
@@ -595,6 +642,7 @@ void BackgroundManager::RestoreSize() {
 }
 
 void BackgroundManager::SaveSize() {
+  if (parking_.parked()) return;  // Hide already saved the visible/DPI-correct size.
   WINDOWPLACEMENT current{};
   current.length = sizeof(current);
   if (!GetWindowPlacement(window_, &current)) return;
@@ -621,6 +669,15 @@ void BackgroundManager::SaveSize() {
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_ACTIVATE && LOWORD(wparam) != WA_INACTIVE && lparam) {
+    HWND previous = reinterpret_cast<HWND>(lparam);
+    DWORD owner = 0;
+    GetWindowThreadProcessId(previous, &owner);
+    if (owner && owner != GetCurrentProcessId()) previous_foreground_ = previous;
+  }
+  if (message == WM_DISPLAYCHANGE && parking_.parked()) parking_.Repark(window_);
+  if (message == WM_SHOWWINDOW) TraceCapture(wparam ? "WM_SHOWWINDOW.show" : "WM_SHOWWINDOW.hide", window_, hidden_, parking_.parked());
+  if (message == WM_WINDOWPOSCHANGED) TraceCapture("WM_WINDOWPOSCHANGED", window_, hidden_, parking_.parked());
   if (message == WM_STYLECHANGED && lparam) {
     const auto* change = reinterpret_cast<const STYLESTRUCT*>(lparam);
     const DWORD changed = change->styleOld ^ change->styleNew;
@@ -635,6 +692,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     }
   }
   if (message == WM_DWMCOMPOSITIONCHANGED) {
+    TraceCapture("WM_DWMCOMPOSITIONCHANGED", window_, hidden_, parking_.parked());
     composition_ready_ = false;
     if (prepared_ && IsWindowVisible(window_)) {
       if (!PreparePresentation()) Hide();
@@ -648,6 +706,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     auto* position = reinterpret_cast<WINDOWPOS*>(lparam);
     position->flags &= ~static_cast<UINT>(SWP_SHOWWINDOW);
     position->flags |= SWP_NOACTIVATE;
+    parking_.ConstrainPosition(position);
   }
   if (automation_ && automation_->HandleMessage(message, wparam)) return true;
   if (message == WM_ENDSESSION && wparam != 0) automation_->Stop(false);
@@ -697,7 +756,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
           {Value("modifiers"), Value(static_cast<int32_t>(b.shortcut.modifiers))},
           {Value("key"), Value(static_cast<int32_t>(b.shortcut.key))}}));
     } else if (i == 0) {
-      if (IsWindowVisible(window_) && !IsIconic(window_)) Hide(); else Show();
+      if (!hidden_ && !IsIconic(window_)) Hide(); else Show();
     } else if (i == 1) {
       PostMessage(window_, WM_APP + 43, 0, 0);
     } else if (i == 2) {

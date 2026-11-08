@@ -17,11 +17,18 @@ public static class HelperCaptureTest {
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder name, int count);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll", EntryPoint="IsWindowVisible")] static extern bool NativeIsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+    public static bool IsWindowVisible(IntPtr hwnd) {
+        // A Win10 hidden panel keeps its native surface alive off all monitors.
+        return NativeIsWindowVisible(hwnd) && !IsIconic(hwnd) && MonitorFromWindow(hwnd, 0) != IntPtr.Zero;
+    }
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     public static IntPtr Find(uint pid) {
         IntPtr result = IntPtr.Zero;
@@ -109,7 +116,8 @@ try {
         }
     } finally { $g.Dispose() }
     $form.BackgroundImage = $pattern; $form.Show(); $form.Activate(); Pump 500
-    $app = Start-Process -FilePath $Executable -ArgumentList '--background' -PassThru
+    $app = Start-Process -FilePath $Executable -ArgumentList '--background', '--capture-diagnostics' -PassThru
+    Write-Output "Native lifecycle logs: $env:LOCALAPPDATA\Helper\Diagnostics (latest capture-*.log)."
     $script:hwnd = [IntPtr]::Zero
     Wait-For { $script:hwnd = [HelperCaptureTest]::Find($app.Id); $script:hwnd -ne [IntPtr]::Zero }
     Pump 3000
@@ -132,6 +140,7 @@ try {
         Pump 200; Compare-Capture "Show cycle $cycle (settled)"
         [HelperCaptureTest]::Shortcut(0x7b)
         Wait-For { -not [HelperCaptureTest]::IsWindowVisible($hwnd) }
+        if ([HelperCaptureTest]::GetForegroundWindow() -eq $hwnd) { throw 'Hidden Helper retained keyboard focus.' }
         Pump 40; Compare-Capture "Hide cycle $cycle"
     }
     [HelperCaptureTest]::Shortcut(0x73)

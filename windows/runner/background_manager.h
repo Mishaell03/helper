@@ -13,9 +13,11 @@
 #include <string>
 #include "text_automation.h"
 #include "startup_visibility.h"
+#include "capture_window_parking.h"
 
 // Also used by a second launch to activate the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
+constexpr UINT kRefreshHelperFrame = WM_APP + 44;
 
 class BackgroundManager {
  public:
@@ -51,6 +53,7 @@ class BackgroundManager {
   bool ShowCountdownInactive();
   bool ShowWindowSafely(bool activate);
   bool PreparePresentation();
+  void RestoreExternalFocus();
   bool ApplyStyles();
   bool SetAutostart(bool enabled, std::string* error);
   void LoadAutostart();
@@ -61,7 +64,9 @@ class BackgroundManager {
 
   HWND window_;
   StartupVisibility visibility_;
-  bool hidden_ = false;
+  bool hidden_ = true;
+  CaptureWindowParking parking_;
+  HWND previous_foreground_ = nullptr;
   bool composition_ready_ = false;
   bool recording_ = false;
   bool start_hidden_ = false;

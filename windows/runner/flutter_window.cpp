@@ -56,6 +56,10 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                                 LPARAM const lparam) noexcept {
+  if (message == kRefreshHelperFrame) {
+    if (flutter_controller_) flutter_controller_->ForceRedraw();
+    return 0;
+  }
   if (flutter_controller_ &&
       ((message == WM_SHOWWINDOW && wparam != FALSE) ||
        message == WM_DWMCOMPOSITIONCHANGED)) {
