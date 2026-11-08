@@ -10,6 +10,7 @@ add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "background_manager.cpp"
   "capture_exclusion.cpp"
+  "window_composition.cpp"
   "text_automation.cpp"
   "main.cpp"
   "utils.cpp"
@@ -37,7 +38,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
-target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib" "gdi32.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib" "ole32.lib" "uuid.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")

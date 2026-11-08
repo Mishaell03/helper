@@ -3,7 +3,7 @@
 
 #include <windows.h>
 
-bool ExcludeFromCapture(HWND window);
+bool ExcludeFromCapture(HWND window, bool refresh_composition = false);
 
 // Best effort for native common-dialog HWNDs owned by this UI thread. Flutter
 // routes/dialogs share the main HWND and need no separate window protection.

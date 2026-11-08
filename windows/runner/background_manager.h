@@ -49,6 +49,8 @@ class BackgroundManager {
   void Hide();
   bool Show();
   bool ShowCountdownInactive();
+  bool ShowWindowSafely(bool activate);
+  bool PreparePresentation();
   bool ApplyStyles();
   bool SetAutostart(bool enabled, std::string* error);
   void LoadAutostart();
@@ -59,8 +61,8 @@ class BackgroundManager {
 
   HWND window_;
   StartupVisibility visibility_;
-  WINDOWPLACEMENT placement_{};
   bool hidden_ = false;
+  bool composition_ready_ = false;
   bool recording_ = false;
   bool start_hidden_ = false;
   bool autostart_ = false;

@@ -21,8 +21,13 @@ LRESULT CALLBACK DialogHook(int code, WPARAM wparam, LPARAM lparam) {
 }
 }  // namespace
 
-bool ExcludeFromCapture(HWND window) {
+bool ExcludeFromCapture(HWND window, bool refresh_composition) {
   constexpr DWORD kExcludeFromCapture = 0x00000011;  // WDA_EXCLUDEFROMCAPTURE
+  DWORD current = WDA_NONE;
+  if (!refresh_composition && GetWindowDisplayAffinity(window, &current) &&
+      current == kExcludeFromCapture) {
+    return true;  // Do not rebuild DWM's protection state on each Show/Hide.
+  }
   if (SetWindowDisplayAffinity(window, kExcludeFromCapture)) return true;
   std::cerr << "Не удалось исключить окно из захвата экрана. Код Win32: "
             << GetLastError() << std::endl;

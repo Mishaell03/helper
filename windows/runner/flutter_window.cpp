@@ -34,8 +34,8 @@ bool FlutterWindow::OnCreate() {
   background_manager_ = std::make_unique<BackgroundManager>(
       GetHandle(), flutter_controller_->engine()->messenger(), start_hidden_);
 
-  // Dart configures transparency, the frameless style and always-on-top before
-  // window_manager shows the window. Do not show a decorated window here.
+  // Dart configures the frameless style; BackgroundManager owns DWM alpha and
+  // the final presentation. Do not show a decorated/unprotected window here.
 
   // Request the initial frame while Dart prepares the window for display.
   flutter_controller_->ForceRedraw();
@@ -55,7 +55,14 @@ void FlutterWindow::OnDestroy() {
 LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
-                               LPARAM const lparam) noexcept {
+                                LPARAM const lparam) noexcept {
+  if (flutter_controller_ &&
+      ((message == WM_SHOWWINDOW && wparam != FALSE) ||
+       message == WM_DWMCOMPOSITIONCHANGED)) {
+    // A hidden Flutter swapchain may not have presented recently. Request a
+    // fresh frame on reveal/compositor reset instead of reusing stale pixels.
+    flutter_controller_->ForceRedraw();
+  }
   // Keep the real system cursor as an arrow on resize borders and during the
   // native move/size loop. Capture exclusion does not hide cursor-shape changes
   // from OBS. Flutter border MouseRegions also request the ordinary arrow.

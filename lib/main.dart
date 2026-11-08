@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:flutter_acrylic/flutter_acrylic.dart' as acrylic;
 import 'package:window_manager/window_manager.dart';
 
 import 'background_service.dart';
@@ -16,14 +15,12 @@ Future<void> main() async {
 
   if (isWindows) {
     await windowManager.ensureInitialized();
-    await acrylic.Window.initialize();
     await windowManager.waitUntilReadyToShow(
       const WindowOptions(
         size: Size(368, 440),
         minimumSize: Size(360, 300),
         maximumSize: Size(1600, 1200),
         center: true,
-        backgroundColor: Colors.transparent,
         title: 'Помощник',
         skipTaskbar: true,
         titleBarStyle: TitleBarStyle.hidden,
@@ -32,10 +29,9 @@ Future<void> main() async {
     );
     await windowManager.setAsFrameless();
     await windowManager.setHasShadow(false);
-    await acrylic.Window.setEffect(
-      effect: acrylic.WindowEffect.transparent,
-      color: Colors.transparent,
-    );
+    // Native runner owns DWM alpha composition. Do not also configure an
+    // Accent backdrop via window_manager/flutter_acrylic: the extra surface can
+    // leave a black capture footprint when the protected window is reshown.
     await windowManager.setAlwaysOnTop(true);
     await BackgroundService.instance.prepareWindow();
   }

@@ -1,5 +1,6 @@
 #include "background_manager.h"
 #include "capture_exclusion.h"
+#include "window_composition.h"
 #include "utils.h"
 
 #include <flutter/standard_method_codec.h>
@@ -36,7 +37,6 @@ BackgroundManager::BackgroundManager(HWND window,
                                      flutter::BinaryMessenger* messenger,
                                      bool start_hidden)
     : window_(window), visibility_(start_hidden), start_hidden_(start_hidden) {
-  placement_.length = sizeof(placement_);
   ApplyStyles();
   std::array<Shortcut, kActionCount> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
       {MOD_CONTROL | MOD_SHIFT, VK_F4}, {MOD_CONTROL | MOD_SHIFT, VK_F6},
@@ -171,7 +171,7 @@ BackgroundManager::BackgroundManager(HWND window,
         result->Success(State());
       }
     } else if (method == "prepareWindow") {
-      if (!ApplyStyles()) {
+      if (!PreparePresentation()) {
         result->Error("window_style_error", startup_error_);
         return;
       }
@@ -342,25 +342,52 @@ BackgroundManager::Value BackgroundManager::State() const {
 
 bool BackgroundManager::ApplyStyles() {
   const LONG_PTR styles = GetWindowLongPtr(window_, GWL_EXSTYLE);
-  SetLastError(ERROR_SUCCESS);
-  const LONG_PTR previous = SetWindowLongPtr(window_, GWL_EXSTYLE,
-      (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW);
-  if (previous == 0 && GetLastError() != ERROR_SUCCESS) {
-    startup_error_ = WinError("Не удалось настроить фоновое окно", GetLastError());
-    return false;
+  const LONG_PTR desired = (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+  bool frame_changed = false;
+  if (styles != desired) {
+    SetLastError(ERROR_SUCCESS);
+    if (SetWindowLongPtr(window_, GWL_EXSTYLE, desired) == 0 &&
+        GetLastError() != ERROR_SUCCESS) {
+      startup_error_ = WinError("Не удалось настроить фоновое окно", GetLastError());
+      return false;
+    }
+    frame_changed = true;
   }
   // Keep standard Windows sizing, but leave non-client painting to the
   // existing frameless window_manager implementation.
   const LONG_PTR style = GetWindowLongPtr(window_, GWL_STYLE);
-  SetLastError(ERROR_SUCCESS);
-  if (SetWindowLongPtr(window_, GWL_STYLE, style | WS_THICKFRAME) == 0 &&
-      GetLastError() != ERROR_SUCCESS) {
-    startup_error_ = WinError("Не удалось включить изменение размера окна", GetLastError());
+  if ((style & WS_THICKFRAME) == 0) {
+    SetLastError(ERROR_SUCCESS);
+    if (SetWindowLongPtr(window_, GWL_STYLE, style | WS_THICKFRAME) == 0 &&
+        GetLastError() != ERROR_SUCCESS) {
+      startup_error_ = WinError("Не удалось включить изменение размера окна", GetLastError());
+      return false;
+    }
+    frame_changed = true;
+  }
+  // Rebuilding an unchanged frame on every reveal invalidates DWM surfaces.
+  // Only change z-order/frame when something actually changed.
+  if (!frame_changed && (styles & WS_EX_TOPMOST) != 0) return true;
+  const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+      (frame_changed ? static_cast<UINT>(SWP_FRAMECHANGED) : 0u);
+  if (!SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0, flags)) {
+    startup_error_ = WinError("Не удалось обновить параметры окна", GetLastError());
     return false;
   }
-  if (!SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0,
-      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
-    startup_error_ = WinError("Не удалось обновить параметры окна", GetLastError());
+  return true;
+}
+
+bool BackgroundManager::PreparePresentation() {
+  if (!ApplyStyles()) return false;
+  const bool composition_changed = !composition_ready_;
+  if (composition_changed) {
+    if (!ConfigureTransparentComposition(window_, &startup_error_)) return false;
+    composition_ready_ = true;
+  }
+  // Check before showing; never reveal a window after a failed protection call.
+  if (!ExcludeFromCapture(window_, composition_changed)) {
+    composition_ready_ = false;
+    startup_error_ = "Не удалось исключить окно из захвата. Показ отменён.";
     return false;
   }
   return true;
@@ -369,27 +396,39 @@ bool BackgroundManager::ApplyStyles() {
 void BackgroundManager::Hide() {
   visibility_.Hide();
   if (hidden_) return;
-  GetWindowPlacement(window_, &placement_);
   if (prepared_) SaveSize();
   hidden_ = true;
   ShowWindow(window_, SW_HIDE);
   if (HWND dialog = ImportDialogWindow()) ShowWindow(dialog, SW_HIDE);
+  FlushHiddenWindowComposition();
 }
 
 bool BackgroundManager::Show() {
-  if (!ApplyStyles()) return false;
-  ExcludeFromCapture(window_);
-  visibility_.Reveal();
-  if (hidden_) {
-    SetWindowPlacement(window_, &placement_);
-    hidden_ = false;
+  return ShowWindowSafely(true);
+}
+
+bool BackgroundManager::ShowWindowSafely(bool activate) {
+  if (!PreparePresentation()) {
+    std::cerr << "Window presentation failed: " << startup_error_ << std::endl;
+    return false;
   }
-  ShowWindow(window_, IsIconic(window_) ? SW_RESTORE : SW_SHOW);
-  SetForegroundWindow(window_);
+  visibility_.Reveal();
+  // SW_HIDE preserves the rectangle. SetWindowPlacement is unnecessary here
+  // and can itself reveal/activate the window before the intended ShowWindow.
+  if (!IsWindowVisible(window_) || IsIconic(window_)) {
+    const int command = activate ? (IsIconic(window_) ? SW_RESTORE : SW_SHOW)
+                                 : SW_SHOWNOACTIVATE;
+    ShowWindow(window_, command);
+  }
+  hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
+  if (hidden_) return false;
+  RedrawWindow(window_, nullptr, nullptr,
+      RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+  if (activate) SetForegroundWindow(window_);
   if (HWND dialog = ImportDialogWindow()) {
-    ExcludeFromCapture(dialog);
-    ShowWindow(dialog, SW_SHOW);
-    SetForegroundWindow(dialog);
+    if (!ExcludeFromCapture(dialog)) return false;
+    ShowWindow(dialog, activate ? SW_SHOW : SW_SHOWNA);
+    if (activate) SetForegroundWindow(dialog);
   }
   return true;
 }
@@ -403,17 +442,8 @@ HWND BackgroundManager::ImportDialogWindow() const {
 }
 
 bool BackgroundManager::ShowCountdownInactive() {
-  if (import_dialog_ || !ApplyStyles()) return false;
-  ExcludeFromCapture(window_);
-  visibility_.Reveal();
-  // Unlike normal Show(), this must NOT activate Helper or steal the external
-  // editor's focus when Start/Resume was requested by a global hotkey.
-  ShowWindow(window_, IsIconic(window_) ? SW_SHOWNOACTIVATE : SW_SHOWNA);
-  if (!SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0,
-      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)) return false;
-  if (!IsWindowVisible(window_) || IsIconic(window_)) return false;
-  hidden_ = false;
-  return true;
+  // Same composition/protection path, without taking focus from the editor.
+  return !import_dialog_ && ShowWindowSafely(false);
 }
 
 void BackgroundManager::PickMarkdownFiles(
@@ -591,6 +621,27 @@ void BackgroundManager::SaveSize() {
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_STYLECHANGED && lparam) {
+    const auto* change = reinterpret_cast<const STYLESTRUCT*>(lparam);
+    const DWORD changed = change->styleOld ^ change->styleNew;
+    // WS_VISIBLE/WS_EX_TOPMOST changes are normal show/hide operations, not
+    // reasons to rebuild composition. Only actual rendering/frame changes count.
+    constexpr DWORD kNoRedirectionBitmap = 0x00200000;
+    if ((wparam == static_cast<WPARAM>(GWL_STYLE) &&
+         (changed & (WS_CAPTION | WS_THICKFRAME)) != 0) ||
+        (wparam == static_cast<WPARAM>(GWL_EXSTYLE) &&
+         (changed & (WS_EX_LAYERED | kNoRedirectionBitmap)) != 0)) {
+      composition_ready_ = false;
+    }
+  }
+  if (message == WM_DWMCOMPOSITIONCHANGED) {
+    composition_ready_ = false;
+    if (prepared_ && IsWindowVisible(window_)) {
+      if (!PreparePresentation()) Hide();
+      else RedrawWindow(window_, nullptr, nullptr,
+          RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+    }
+  }
   if (message == WM_WINDOWPOSCHANGING && lparam && !visibility_.may_show()) {
     // Defend against plugin/window-initialization requests showing or focusing
     // an autostarted window before an explicit reveal action.
