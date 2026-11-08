@@ -254,6 +254,7 @@ class BackgroundService {
   Future<void> hide() => _channel.invokeMethod<void>('hide');
   Future<void> show() => _channel.invokeMethod<void>('show');
   Future<void> finishStartup() => _channel.invokeMethod<void>('finishStartup');
+  Future<void> heartbeat() => _channel.invokeMethod<void>('heartbeat');
   Future<void> exit() => _channel.invokeMethod<void>('exit');
   Future<List<String>> pickMarkdownFiles() async =>
       (await _channel.invokeListMethod<String>('pickMarkdownFiles')) ?? [];

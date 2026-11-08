@@ -7,9 +7,14 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
+#include <atomic>
+#include <sstream>
 
 namespace {
 std::ofstream trace;
+std::mutex trace_mutex;
+std::atomic<bool> trace_enabled{false};
 DWORD WindowsBuild() {
   using RtlGetVersion = LONG(WINAPI*)(OSVERSIONINFOW*);
   const HMODULE module = GetModuleHandleW(L"ntdll.dll");
@@ -35,6 +40,8 @@ bool UseStableCaptureSurface() {
 
 void InitializeCaptureDiagnostics(bool enabled) {
   if (!enabled) return;
+  std::lock_guard<std::mutex> lock(trace_mutex);
+  if (trace.is_open()) return;
   PWSTR local = nullptr;
   if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) return;
   std::filesystem::path directory = std::filesystem::path(local) / L"Helper" / L"Diagnostics";
@@ -52,16 +59,17 @@ void InitializeCaptureDiagnostics(bool enabled) {
       GetCurrentProcessId());
   trace.open(directory / name, std::ios::out | std::ios::trunc);
   if (!trace) return;
-  trace << "Helper capture diagnostics v2; app=" << FLUTTER_VERSION
+  trace << "Helper capture diagnostics v3; app=" << FLUTTER_VERSION
         << "; windows_build=" << CaptureWindowsBuild()
         << "; stable_surface=" << UseStableCaptureSurface()
         << "; pid=" << GetCurrentProcessId() << '\n';
   trace << "No text, screenshots or keyboard contents are collected.\n";
   trace.flush();
+  trace_enabled.store(true);
 }
 
 void TraceCapture(const char* event, HWND window, bool hidden, bool parked, DWORD error) {
-  if (!trace.is_open()) return;
+  if (!trace_enabled.load()) return;
   RECT rectangle{};
   GetWindowRect(window, &rectangle);
   DWORD affinity = 0;
@@ -70,7 +78,8 @@ void TraceCapture(const char* event, HWND window, bool hidden, bool parked, DWOR
   const DWORD affinity_error = affinity_ok ? ERROR_SUCCESS : GetLastError();
   DWORD cloaked = 0;
   const HRESULT cloak_result = DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
-  trace << GetTickCount64() << " event=" << event
+  std::ostringstream record;
+  record << GetTickCount64() << " event=" << event
         << " hwnd=" << window << " hidden=" << hidden << " parked=" << parked
         << " visible=" << IsWindowVisible(window) << " iconic=" << IsIconic(window)
         << " foreground=" << (GetForegroundWindow() == window)
@@ -81,11 +90,20 @@ void TraceCapture(const char* event, HWND window, bool hidden, bool parked, DWOR
         << " affinity_ok=" << affinity_ok << " affinity_error=" << affinity_error
         << " cloak_hr=" << static_cast<long>(cloak_result) << " cloaked=" << cloaked
         << " error=" << error << '\n';
-  trace.flush();
+  std::lock_guard<std::mutex> lock(trace_mutex);
+  trace << record.str(); trace.flush();
 }
 
 void TraceCaptureFailure(const std::string& message) {
-  if (!trace.is_open()) return;
+  if (!trace_enabled.load()) return;
+  std::lock_guard<std::mutex> lock(trace_mutex);
   trace << GetTickCount64() << " failure=" << message << '\n';
+  trace.flush();
+}
+
+void TraceCaptureNote(const std::string& message) {
+  if (!trace_enabled.load()) return;
+  std::lock_guard<std::mutex> lock(trace_mutex);
+  trace << GetTickCount64() << " note=" << message << '\n';
   trace.flush();
 }

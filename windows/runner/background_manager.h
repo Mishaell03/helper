@@ -15,6 +15,7 @@
 #include "startup_visibility.h"
 #include "capture_window_parking.h"
 #include "task_view_guard.h"
+#include "window_watchdog.h"
 
 // Also used by a second launch to activate the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
@@ -81,6 +82,7 @@ class BackgroundManager {
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;
   std::unique_ptr<TextAutomation> automation_;
   std::unique_ptr<TaskViewGuard> task_view_guard_;
+  std::unique_ptr<WindowWatchdog> watchdog_;
 };
 
 #endif

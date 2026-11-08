@@ -9,6 +9,9 @@ import 'platform.dart';
 import 'panel_theme.dart';
 import 'ordinary_cursor.dart';
 import 'automation/text_automation.dart';
+import 'ui_heartbeat.dart';
+
+UiHeartbeat? _heartbeat;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,6 +44,8 @@ Future<void> main() async {
   if (isWindows) {
     await WidgetsBinding.instance.waitUntilFirstFrameRasterized;
     await BackgroundService.instance.finishStartup();
+    _heartbeat ??= UiHeartbeat(BackgroundService.instance.heartbeat);
+    _heartbeat!.start();
   }
 }
 

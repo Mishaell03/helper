@@ -114,6 +114,9 @@ BackgroundManager::BackgroundManager(HWND window,
     const auto& method = call.method_name();
     if (method == "getSettings") {
       result->Success(State());
+    } else if (method == "heartbeat") {
+      if (watchdog_) watchdog_->DartPulse();
+      result->Success();
     } else if (method == "getAppVersion") {
       result->Success(Value(FLUTTER_VERSION));
     } else if (method == "getStorageDirectory") {
@@ -214,9 +217,11 @@ BackgroundManager::BackgroundManager(HWND window,
   if (!task_view_guard_->active()) {
     startup_error_ += "Не удалось включить скрытие перед Win+Tab. Проверьте показ панели в обзоре задач. ";
   }
+  watchdog_ = std::make_unique<WindowWatchdog>(window_);
 }
 
 BackgroundManager::~BackgroundManager() {
+  watchdog_.reset();
   task_view_guard_.reset();
   automation_.reset();
   if (prepared_) SaveSize();
@@ -416,6 +421,7 @@ void BackgroundManager::HideForTaskView() {
 }
 
 void BackgroundManager::Hide(bool persist_size) {
+  if (watchdog_) watchdog_->SetVisible(false);
   TraceCapture("hide.begin", window_, hidden_, parking_.parked());
   visibility_.Hide();
   if (hidden_) return;
@@ -462,6 +468,10 @@ bool BackgroundManager::ShowWindowSafely(bool activate) {
     std::cerr << "Window presentation failed: " << startup_error_ << std::endl;
     return false;
   }
+  if (watchdog_ && !watchdog_->AllowReveal()) {
+    startup_error_ = "Интерфейс ещё не отвечает. Панель остаётся скрытой; попробуйте показать её позже.";
+    return false;
+  }
   visibility_.Reveal();
   if (!parking_.Restore(window_)) {
     TraceCapture("show.restore_failed", window_, hidden_, parking_.parked(), GetLastError());
@@ -477,6 +487,7 @@ bool BackgroundManager::ShowWindowSafely(bool activate) {
   }
   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
   if (hidden_) return false;
+  if (watchdog_) watchdog_->SetVisible(true);
   PostMessage(window_, kRefreshHelperFrame, 0, 0);
   RedrawWindow(window_, nullptr, nullptr,
       RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
@@ -528,9 +539,11 @@ void BackgroundManager::PickMarkdownFiles(
   if (SUCCEEDED(status)) status = import_dialog_->SetOkButtonLabel(L"Импортировать");
   if (SUCCEEDED(status)) {
     CaptureDialogScope capture_scope;
+    if (watchdog_) watchdog_->SetNativeDialogOpen(true);
     // The Windows dialog pumps messages. HandleMessage defers exit until this
     // call returns so the messenger/result cannot be destroyed mid-callback.
     status = import_dialog_->Show(window_);
+    if (watchdog_) watchdog_->SetNativeDialogOpen(false);
   }
   flutter::EncodableList paths;
   if (SUCCEEDED(status)) {
@@ -685,6 +698,17 @@ void BackgroundManager::SaveSize() {
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_TIMER && wparam == kWatchdogNativeTimer) {
+    if (watchdog_) watchdog_->NativePulse();
+    return true;
+  }
+  if (message == kWatchdogTriggered) {
+    automation_->Pause("Интерфейс не отвечал. Панель скрыта, ввод приостановлен.");
+    Hide(false);
+    composition_ready_ = false; // Revalidate protected composition before recovery.
+    if (watchdog_) watchdog_->AcknowledgeHidden();
+    return true;
+  }
   if (message == WM_ACTIVATE && LOWORD(wparam) != WA_INACTIVE && lparam) {
     HWND previous = reinterpret_cast<HWND>(lparam);
     DWORD owner = 0;
