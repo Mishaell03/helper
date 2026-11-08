@@ -219,4 +219,63 @@ void main() {
     expect(updater.preparations, 1);
     expect(installs, 1);
   });
+
+  testWidgets(
+    'Install-in-progress does not falsely request stopping automation',
+    (tester) async {
+      final updater = _UiUpdater()..updateAvailable = true;
+      var enabled = true;
+      late StateSetter change;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (_, setState) {
+                change = setState;
+                return UpdateSettings(
+                  enabled: enabled,
+                  updater: updater,
+                  install: (launch) async {
+                    change(
+                      () => enabled = false,
+                    ); // Parent's install gate, not active typing.
+                    await Future<void>.delayed(
+                      const Duration(milliseconds: 100),
+                    );
+                    await launch();
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Проверить обновления'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Обновить'));
+      await tester.pump();
+      expect(
+        find.text('Дождитесь завершения текущей операции с файлами.'),
+        findsNothing,
+      );
+      expect(find.textContaining('Сначала остановите ввод'), findsNothing);
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pumpAndSettle();
+      expect(updater.preparations, 1);
+    },
+  );
+
+  test('Local installation failures show stage and persistent log path', () {
+    final message = updateError(
+      UpdateFailure(
+        'Подготовка файлов',
+        'Access denied',
+        r'C:\Users\Test\Helper\Updates\update.log',
+      ),
+    );
+    expect(message, contains('Подготовка файлов'));
+    expect(message, contains('Access denied'));
+    expect(message, contains('update.log'));
+    expect(message, isNot(contains('подключение к интернету')));
+  });
 }

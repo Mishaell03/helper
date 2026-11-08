@@ -2,6 +2,7 @@
 #include "capture_exclusion.h"
 #include "window_composition.h"
 #include "capture_diagnostics.h"
+#include "update_launcher.h"
 #include "utils.h"
 
 #include <flutter/standard_method_codec.h>
@@ -38,6 +39,10 @@ int64_t MapInteger(const flutter::EncodableMap& map, const char* name) {
   if (const auto* value = std::get_if<int32_t>(&found->second)) return *value;
   if (const auto* value = std::get_if<int64_t>(&found->second)) return *value;
   return 0;
+}
+const std::string* MapString(const flutter::EncodableMap& map, const char* name) {
+  const auto found = map.find(flutter::EncodableValue(name));
+  return found == map.end() ? nullptr : std::get_if<std::string>(&found->second);
 }
 }  // namespace
 
@@ -136,6 +141,31 @@ BackgroundManager::BackgroundManager(HWND window,
       result->Success();
     } else if (method == "getAppVersion") {
       result->Success(Value(FLUTTER_VERSION));
+    } else if (method == "launchUpdate") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      const auto* work_path = args ? MapString(*args, "workDir") : nullptr;
+      const auto* log_path = args ? MapString(*args, "logPath") : nullptr;
+      std::string error;
+      if (!work_path || !log_path) {
+        result->Error("update_error", "Не указан каталог обновления или журнал.");
+      } else {
+        // Stop is native and authoritative, independent of stale Dart snapshots.
+        automation_->Stop();
+        if (update_process_) {
+          if (WaitForSingleObject(update_process_, 0) == WAIT_TIMEOUT) TerminateProcess(update_process_, ERROR_CANCELLED);
+          CloseHandle(update_process_);
+          update_process_ = nullptr;
+        }
+        if (LaunchUpdateHelper(Utf16FromUtf8(*work_path), Utf16FromUtf8(*log_path), &error, &update_process_)) result->Success();
+        else result->Error("update_error", error);
+      }
+    } else if (method == "cancelUpdate") {
+      if (update_process_) {
+        if (WaitForSingleObject(update_process_, 0) == WAIT_TIMEOUT) TerminateProcess(update_process_, ERROR_CANCELLED);
+        CloseHandle(update_process_);
+        update_process_ = nullptr;
+      }
+      result->Success();
     } else if (method == "getStorageDirectory") {
       PWSTR directory = nullptr;
       const HRESULT status = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0,
@@ -238,6 +268,7 @@ BackgroundManager::BackgroundManager(HWND window,
 }
 
 BackgroundManager::~BackgroundManager() {
+  if (update_process_) CloseHandle(update_process_); // Do not kill committed updater.
   watchdog_.reset();
   task_view_guard_.reset();
   automation_.reset();

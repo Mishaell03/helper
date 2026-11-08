@@ -14,6 +14,7 @@ add_executable(${BINARY_NAME} WIN32
   "capture_window_parking.cpp"
   "task_view_guard.cpp"
   "window_watchdog.cpp"
+  "update_launcher.cpp"
   "window_composition.cpp"
   "text_automation.cpp"
   "main.cpp"

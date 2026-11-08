@@ -36,11 +36,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     return EXIT_SUCCESS;
   }
 
-  // Descendants inherit job membership. No breakaway is allowed. When Helper
-  // exits, Windows closes this handle and terminates any remaining children.
+  // Ordinary descendants inherit kill-on-close membership. Only the explicit
+  // native updater launcher requests BREAKAWAY so installation can outlive us.
   ScopedHandle job(CreateJobObjectW(nullptr, nullptr), CloseHandle);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  limits.BasicLimitInformation.LimitFlags =
+      JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
   if (!job || !SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
                                       &limits, sizeof(limits)) ||
       !AssignProcessToJobObject(job.get(), GetCurrentProcess())) {

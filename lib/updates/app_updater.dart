@@ -5,6 +5,16 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
+import 'update_handoff.dart';
+
+class UpdateFailure implements Exception {
+  UpdateFailure(this.stage, this.message, this.logPath);
+  final String stage, message;
+  final String? logPath;
+  @override
+  String toString() =>
+      '$stage: $message${logPath == null ? '' : '\nЖурнал: $logPath'}';
+}
 
 class ReleaseVersion implements Comparable<ReleaseVersion> {
   ReleaseVersion(this.major, this.minor, this.patch);
@@ -91,6 +101,21 @@ class AppUpdater {
   );
   static const _channel = MethodChannel('helper/background');
   Directory? _work;
+  File? _log;
+  bool _preserveWork = false;
+  bool _helperLaunched = false;
+
+  Future<void> _writeLog(String message) async {
+    try {
+      await _log?.writeAsString(
+        '${DateTime.now().toIso8601String()} $message\n',
+        mode: FileMode.append,
+        flush: true,
+      );
+    } catch (_) {
+      /* Logging must not mask the real error. */
+    }
+  }
 
   Future<String> currentVersion() async =>
       (await _channel.invokeMethod<String>('getAppVersion'))!;
@@ -173,10 +198,34 @@ class AppUpdater {
       throw const FormatException('Обновление доступно только в Windows.');
     }
     await cleanup();
+    _preserveWork = false;
+    _helperLaunched = false;
     final work = _work = await Directory.systemTemp.createTemp(
       'helper_update_',
     );
     final archive = File(path.join(work.path, 'update.zip'));
+    final local = Platform.environment['LOCALAPPDATA'];
+    _log = File(path.join(work.path, 'update.log'));
+    if (local == null) _preserveWork = true;
+    if (local != null) {
+      try {
+        final directory = await Directory(
+          path.join(local, 'Helper', 'Updates'),
+        ).create(recursive: true);
+        _log = File(
+          path.join(
+            directory.path,
+            'update-${DateTime.now().microsecondsSinceEpoch}.log',
+          ),
+        );
+      } catch (_) {
+        _preserveWork = true;
+      }
+    }
+    await _writeLog(
+      'release=${release.tag} work=${work.path} install=${path.dirname(Platform.resolvedExecutable)}',
+    );
+    var stage = 'Скачивание';
     final client = _clientFactory()
       ..connectionTimeout = const Duration(seconds: 20);
     try {
@@ -205,6 +254,7 @@ class AppUpdater {
       } finally {
         await sink.close();
       }
+      stage = 'Проверка архива';
       if (received != release.size ||
           (await sha256.bind(archive.openRead()).first).toString() !=
               release.digest) {
@@ -212,20 +262,35 @@ class AppUpdater {
           'Проверка SHA-256 или размера не пройдена. Обновление отменено.',
         );
       }
+      stage = 'Подготовка файлов';
+      _preserveWork = true;
       final script = File(path.join(work.path, 'update.ps1'));
       await script.writeAsString(
         await rootBundle.loadString('assets/update_windows.ps1'),
         encoding: utf8,
       );
-      final result = await Process.run(_powershell, _arguments('Prepare'));
+      final result = await Process.run(
+        _powershell,
+        _arguments('Prepare'),
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
+      );
+      await _writeLog(
+        'prepare exit=${result.exitCode}\n${result.stdout}\n${result.stderr}',
+      );
       if (result.exitCode != 0) {
         throw FormatException(
           'Не удалось подготовить обновление. Проверьте права записи в папку приложения.\n${result.stderr}',
         );
       }
-    } catch (_) {
-      await cleanup();
-      rethrow;
+      _preserveWork = path.isWithin(work.path, _log!.path);
+    } catch (error) {
+      await _writeLog('$stage failed: $error');
+      throw UpdateFailure(
+        stage,
+        error is FormatException ? error.message : '$error',
+        _log?.path,
+      );
     } finally {
       client.close(force: true);
     }
@@ -253,38 +318,77 @@ class AppUpdater {
     path.dirname(Platform.resolvedExecutable),
     '-AppProcessId',
     '$pid',
+    '-LogPath',
+    _log!.path,
   ];
 
   Future<void> launchInstaller() async {
     if (_work == null) throw StateError('Update is not prepared');
-    await Process.start(
-      _powershell,
-      _arguments('Apply'),
-      mode: ProcessStartMode.detached,
-    );
-    final ready = File(path.join(_work!.path, 'ready'));
-    final deadline = DateTime.now().add(const Duration(seconds: 15));
-    while (!await ready.exists()) {
-      if (DateTime.now().isAfter(deadline)) {
-        await File(
-          path.join(_work!.path, 'cancelled'),
-        ).writeAsString('cancelled');
-        throw const FormatException(
-          'Не удалось запустить установку обновления. Приложение не будет закрыто.',
-        );
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+    try {
+      await _writeLog('launch independent native updater');
+      await awaitUpdateHelper(_work!, () async {
+        _helperLaunched = true;
+        await _channel.invokeMethod<void>('launchUpdate', {
+          'workDir': _work!.path,
+          'logPath': _log!.path,
+        });
+      });
+      await _writeLog('updater ready; requesting normal application exit');
+      // Keep the reference until process exit, so a failed exit can cancel the
+      // waiting helper instead of allowing a surprise installation later.
+    } catch (error) {
+      await _writeLog('handoff failed: $error');
+      throw UpdateFailure(
+        'Запуск установки',
+        error is PlatformException
+            ? error.message ?? error.code
+            : error is FormatException
+            ? error.message
+            : '$error',
+        _log?.path,
+      );
     }
-    _work = null; // The external updater now owns its temporary files.
   }
 
   Future<void> cleanup() async {
     final work = _work;
     _work = null;
-    if (work != null && await work.exists()) await work.delete(recursive: true);
+    if (work == null) return;
+    if (_helperLaunched) {
+      try {
+        await File(
+          path.join(work.path, 'cancelled'),
+        ).writeAsString('cancelled');
+      } catch (error) {
+        await _writeLog('cancellation marker failed: $error');
+      }
+      try {
+        await _channel.invokeMethod<void>('cancelUpdate');
+      } catch (error) {
+        await _writeLog('native cancellation failed: $error');
+      }
+    }
+    if (!_preserveWork && !_helperLaunched) {
+      try {
+        if (await work.exists()) await work.delete(recursive: true);
+      } catch (error) {
+        await _writeLog('cleanup failed: $error');
+      }
+    }
   }
 }
 
-String updateError(Object error) => error is FormatException
-    ? error.message
-    : 'Не удалось проверить или загрузить обновление. Проверьте подключение к интернету и доступ к GitHub.';
+String updateError(Object error) {
+  if (error is UpdateFailure) return error.toString();
+  if (error is FormatException) return error.message;
+  if (error is PlatformException && error.code == 'update_error') {
+    return error.message ?? 'Ошибка запуска установки.';
+  }
+  if (error is FileSystemException) {
+    return 'Ошибка доступа к файлам обновления: ${error.message}';
+  }
+  if (error is ProcessException) {
+    return 'Не удалось запустить системный процесс обновления: ${error.message}';
+  }
+  return 'Не удалось проверить или загрузить обновление. Проверьте подключение к интернету и доступ к GitHub.';
+}

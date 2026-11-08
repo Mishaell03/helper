@@ -19,13 +19,15 @@ function New-Work([string]$Name) {
   [IO.Compression.ZipFile]::CreateFromDirectory($payload, (Join-Path $work 'update.zip'))
   return $work
 }
-function Invoke-Updater([string]$Mode, [string]$Work, [int]$TargetPid) {
+function Invoke-Updater([string]$Mode, [string]$Work, [int]$TargetPid, [string]$LogPath = '') {
   # Expected rejection cases emit native stderr in Windows PowerShell 5.1.
   $savedPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
+    $logArguments = @()
+    if ($LogPath) { $logArguments = @('-LogPath', $LogPath) }
     & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script `
-        -Mode $Mode -WorkDir $Work -InstallDir $install -AppProcessId $TargetPid -NoUi 2>&1 | Out-Null
+        -Mode $Mode -WorkDir $Work -InstallDir $install -AppProcessId $TargetPid @logArguments -NoUi 2>&1 | Out-Null
     return $LASTEXITCODE
   } finally { $ErrorActionPreference = $savedPreference }
 }
@@ -46,13 +48,25 @@ try {
   [IO.File]::WriteAllText((Join-Path $install 'unrelated.txt'), 'preserve me')
 
   $work = New-Work 'successful'
-  Assert ((Invoke-Updater 'Prepare' $work $PID) -eq 0) 'Valid archive rejected.'
+  $persistentLog = Join-Path $root 'persistent-update.log'
+  Assert ((Invoke-Updater 'Prepare' $work $PID $persistentLog) -eq 0) 'Valid archive rejected.'
   $sleeper = Start-Sleeper
-  Assert ((Invoke-Updater 'Apply' $work $sleeper.Id) -eq 0) 'Apply failed.'
+  Assert ((Invoke-Updater 'Apply' $work $sleeper.Id $persistentLog) -eq 0) 'Apply failed.'
   Assert (([IO.File]::ReadAllText((Join-Path $install 'flutter_windows.dll'))) -eq 'new dll') 'DLL not replaced.'
   Assert (([IO.File]::ReadAllText((Join-Path $install 'unrelated.txt'))) -eq 'preserve me') 'Unrelated file changed.'
   Assert (Test-Path -LiteralPath (Join-Path $install 'data\flutter_assets\fixture')) 'New assets missing.'
   Assert (-not (Test-Path -LiteralPath $work)) 'Successful update was not cleaned up.'
+  Assert (([IO.File]::ReadAllText($persistentLog)).Contains('Replacement succeeded')) 'Persistent success log missing.'
+
+  # Cancellation must fail before readiness and must not restart the running app.
+  $work = New-Work 'cancelled'
+  Assert ((Invoke-Updater 'Prepare' $work $PID) -eq 0) 'Cancellation fixture rejected.'
+  [IO.File]::WriteAllText((Join-Path $work 'cancelled'), 'cancelled')
+  Assert ((Invoke-Updater 'Apply' $work $PID) -ne 0) 'Cancelled handoff accepted.'
+  Assert (-not (Test-Path -LiteralPath (Join-Path $work 'ready'))) 'Cancelled updater published readiness.'
+  $failure = Get-Content -LiteralPath (Join-Path $work 'failed.json') -Raw | ConvertFrom-Json
+  Assert ($failure.message.Contains('cancelled')) 'Early failure cause missing.'
+  Assert (([IO.File]::ReadAllText((Join-Path $install 'flutter_windows.dll'))) -eq 'new dll') 'Cancelled update changed files.'
 
   # Force a failure after at least one replacement; test the backup rollback.
   Start-Sleep -Milliseconds 500
@@ -68,6 +82,7 @@ try {
   Assert (([IO.File]::ReadAllText((Join-Path $install 'flutter_windows.dll'))) -eq 'rollback dll') 'Backup rollback failed.'
   Assert (([IO.File]::ReadAllText((Join-Path $install 'zlocked.dll'))) -eq 'keep locked') 'Locked file changed.'
   Assert (Test-Path -LiteralPath (Join-Path $work 'update.log')) 'Error log missing.'
+  Assert (Test-Path -LiteralPath (Join-Path $work 'failed.json')) 'Apply failure marker missing.'
 
   # A traversal entry must be rejected before any installation file changes.
   $work = Join-Path $root 'unsafe'
@@ -79,8 +94,10 @@ try {
     $writer.Write('unsafe'); $writer.Dispose()
   } finally { $zip.Dispose() }
   Assert ((Invoke-Updater 'Prepare' $work $PID) -ne 0) 'Traversal ZIP accepted.'
+  $failure = Get-Content -LiteralPath (Join-Path $work 'failed.json') -Raw | ConvertFrom-Json
+  Assert ($failure.message.Contains('Unsafe ZIP')) 'Preparation failure cause missing.'
   Assert (-not (Test-Path -LiteralPath (Join-Path $work 'escaped.txt'))) 'ZIP escaped staging.'
-  Write-Output 'PASS: prepare, replacement, preservation of unrelated files, rollback, traversal rejection.'
+  Write-Output 'PASS: prepare, replacement, persistent log, cancellation, failure markers, preservation of unrelated files, rollback, traversal rejection.'
 } finally {
   if ($lock) { $lock.Dispose() }
   if ($sleeper -and -not $sleeper.HasExited) { $sleeper.WaitForExit() }

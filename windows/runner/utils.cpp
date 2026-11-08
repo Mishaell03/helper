@@ -7,6 +7,16 @@
 
 #include <iostream>
 
+std::wstring Utf16FromUtf8(const std::string& text) {
+  if (text.empty() || text.size() > 32767u * 4u || text.find('\0') != std::string::npos) return {};
+  const int size = static_cast<int>(text.size());
+  const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), size, nullptr, 0);
+  if (length <= 0 || length > 32767) return {};
+  std::wstring result(static_cast<size_t>(length), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), size, result.data(), length) != length) return {};
+  return result;
+}
+
 void CreateAndAttachConsole() {
   if (::AllocConsole()) {
     FILE *unused;

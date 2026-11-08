@@ -3,15 +3,38 @@ param(
   [Parameter(Mandatory=$true)][string]$WorkDir,
   [Parameter(Mandatory=$true)][string]$InstallDir,
   [Parameter(Mandatory=$true)][int]$AppProcessId,
+  [string]$LogPath,
   [switch]$NoUi
 )
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path $WorkDir 'stage'
 $backup = Join-Path $WorkDir 'backup'
 $log = Join-Path $WorkDir 'update.log'
+if ($LogPath) { $log = $LogPath }
 $exe = Join-Path $InstallDir 'helper.exe'
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
+
+function Write-UpdateLog([string]$Message) {
+  try { Add-Content -LiteralPath $log -Value ("{0:o} {1}" -f [DateTime]::Now, $Message) -Encoding UTF8 } catch { }
+}
+function Write-UpdateFailure([string]$Message) {
+  Write-UpdateLog $Message
+  try {
+    $json = @{ message = $Message; log = $log } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText((Join-Path $WorkDir 'failed.json.tmp'), $json)
+    Move-Item -LiteralPath (Join-Path $WorkDir 'failed.json.tmp') -Destination (Join-Path $WorkDir 'failed.json') -Force
+  } catch { }
+}
+function Copy-UpdateFile([string]$Source, [string]$Destination) {
+  for ($attempt = 0; $attempt -lt 25; $attempt++) {
+    try { Copy-Item -LiteralPath $Source -Destination $Destination -Force; return }
+    catch { if ($attempt -eq 24) { throw }; Start-Sleep -Milliseconds 200 }
+  }
+}
 
 if ($Mode -eq 'Prepare') {
+  try {
+  Write-UpdateLog "Preparing archive in $WorkDir"
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   [void][IO.Directory]::CreateDirectory($stage)
   $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $WorkDir 'update.zip'))
@@ -57,19 +80,31 @@ if ($Mode -eq 'Prepare') {
   $probe = Join-Path $InstallDir ([guid]::NewGuid().ToString() + '.update-test')
   [IO.File]::WriteAllText($probe, 'test')
   Remove-Item -LiteralPath $probe
+  Write-UpdateLog 'Preparation succeeded.'
   exit 0
+  } catch {
+    Write-UpdateFailure ($_ | Out-String)
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+  }
 }
 
 $replaced = New-Object 'System.Collections.Generic.List[string]'
 $created = New-Object 'System.Collections.Generic.List[string]'
+$appExited = $false
 try {
+  Write-UpdateLog 'Independent updater started.'
   # Capture the running process before waiting to avoid acting on a reused PID.
   $app = Get-Process -Id $AppProcessId -ErrorAction SilentlyContinue
   if (-not $app -or -not (Test-Path -LiteralPath $stage) -or
       (Test-Path -LiteralPath (Join-Path $WorkDir 'cancelled'))) { throw 'Update handoff cancelled.' }
+  $null = $app.Handle # Pin the process handle BEFORE publishing readiness.
+  Write-UpdateLog "Ready; waiting for process $AppProcessId to exit."
   [IO.File]::WriteAllText((Join-Path $WorkDir 'ready'), 'ready')
   if (-not $app.WaitForExit(120000)) { throw 'Helper did not exit. No files were changed.' }
+  $appExited = $true
   if (Test-Path -LiteralPath (Join-Path $WorkDir 'cancelled')) { throw 'Update cancelled.' }
+  Write-UpdateLog 'Helper exited; replacing application files.'
   [void][IO.Directory]::CreateDirectory($backup)
   foreach ($file in Get-ChildItem -LiteralPath $stage -File -Recurse) {
     $relative = $file.FullName.Substring($stage.Length + 1)
@@ -77,29 +112,32 @@ try {
     if (Test-Path -LiteralPath $target) {
       $saved = Join-Path $backup $relative
       [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($saved))
-      Copy-Item -LiteralPath $target -Destination $saved
+      Copy-UpdateFile $target $saved
       $replaced.Add($relative)
     } else { $created.Add($relative) }
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-    Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+    Copy-UpdateFile $file.FullName $target
   }
   Start-Process -FilePath $exe -WorkingDirectory $InstallDir
+  Write-UpdateLog 'Replacement succeeded; application restart requested.'
 } catch {
-  $_ | Out-String | Set-Content -LiteralPath $log
+  Write-UpdateFailure ($_ | Out-String)
   $rollbackFailed = $false
   foreach ($relative in $replaced) {
-    try { Copy-Item -LiteralPath (Join-Path $backup $relative) -Destination (Join-Path $InstallDir $relative) -Force }
-    catch { $rollbackFailed = $true; $_ | Out-String | Add-Content -LiteralPath $log }
+    try { Copy-UpdateFile (Join-Path $backup $relative) (Join-Path $InstallDir $relative) }
+    catch { $rollbackFailed = $true; Write-UpdateLog ($_ | Out-String) }
   }
   foreach ($relative in $created) {
     try { if (Test-Path -LiteralPath (Join-Path $InstallDir $relative)) { Remove-Item -LiteralPath (Join-Path $InstallDir $relative) } }
     catch { $rollbackFailed = $true }
   }
+  Write-UpdateLog "Rollback incomplete: $rollbackFailed. Backup directory: $backup"
   if (-not $NoUi) {
     Add-Type -AssemblyName System.Windows.Forms
-    [void][Windows.Forms.MessageBox]::Show("Update failed. Rollback incomplete: $rollbackFailed. Backup and log: $WorkDir", 'Helper update')
+    [void][Windows.Forms.MessageBox]::Show("Update failed. Rollback incomplete: $rollbackFailed. Log: $log. Backup: $backup", 'Helper update')
   }
-  if (-not $rollbackFailed -and (Test-Path -LiteralPath $exe)) { Start-Process -FilePath $exe -WorkingDirectory $InstallDir }
+  if ($appExited -and -not $rollbackFailed -and (Test-Path -LiteralPath $exe)) { Start-Process -FilePath $exe -WorkingDirectory $InstallDir }
   exit 1 # Keep backup/log for recovery; never touch LocalAppData or registry.
 }
-Remove-Item -LiteralPath $WorkDir -Recurse -Force
+try { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
+catch { Write-UpdateLog ("Installed successfully; temporary cleanup failed: " + $_.Exception.Message) }

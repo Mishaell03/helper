@@ -41,7 +41,7 @@ class _UpdateSettingsState extends State<UpdateSettings> {
           scrollable: true,
           title: Text('Доступна версия ${release.tag}'),
           content: Text(
-            'Сейчас: $current. Скачать ${(release.size / 1024 / 1024).toStringAsFixed(1)} МБ с GitHub и обновить?\n\nПриложение закроется и запустится снова. Импорты и настройки сохранятся. Переустановка не требуется.',
+            'Сейчас: $current. Скачать ${(release.size / 1024 / 1024).toStringAsFixed(1)} МБ с GitHub и обновить?\n\nПеред установкой автоматический ввод будет остановлен. Приложение закроется и запустится снова. Импорты и настройки сохранятся.',
           ),
           actions: [
             TextButton(
@@ -77,15 +77,8 @@ class _UpdateSettingsState extends State<UpdateSettings> {
         await _updater.cleanup();
         return;
       }
-      // Recheck after download: automation could have started in the meantime.
-      if (!widget.enabled) {
-        await _updater.cleanup();
-        setState(
-          () => _status =
-              'Сначала остановите ввод и завершите операции с файлами.',
-        );
-        return;
-      }
+      // The install callback checks current file operations and stops native
+      // automation atomically with its install gate. A widget snapshot is stale.
       setState(() => _status = 'Перезапуск для установки обновления…');
       await widget.install(_updater.launchInstaller);
     } catch (error) {
@@ -110,9 +103,9 @@ class _UpdateSettingsState extends State<UpdateSettings> {
         _status,
         style: const TextStyle(color: Colors.white60, fontSize: 11),
       ),
-      if (!widget.enabled)
+      if (!widget.enabled && !_busy)
         const Text(
-          'Для обновления остановите ввод и завершите операции с файлами.',
+          'Дождитесь завершения текущей операции с файлами.',
           style: TextStyle(fontSize: 11),
         ),
       const SizedBox(height: 8),

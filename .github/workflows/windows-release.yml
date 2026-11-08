@@ -51,6 +51,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./responsiveness_policy_test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /std:c++17 /EHsc /utf-8 /W4 /WX test/native/update_launcher_test.cpp windows/runner/update_launcher.cpp /Fe:update_launcher_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./update_launcher_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build release packages
         shell: pwsh
         run: |

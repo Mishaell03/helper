@@ -165,9 +165,19 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   Future<void> _installUpdate(Future<void> Function() launch) async {
+    if (_busy) {
+      throw const FormatException(
+        'Сначала завершите импорт или открытие файла. Обновление пока не начато.',
+      );
+    }
     setState(() => _installingUpdate = true);
     try {
       await _automation?.stop();
+      if (_automation?.state.engaged == true || _automation?.failure != null) {
+        throw FormatException(
+          _automation?.failure ?? 'Не удалось остановить автоматический ввод.',
+        );
+      }
       await _automation?.flushPreferences();
       await launch();
       await BackgroundService.instance.exit();
@@ -1104,13 +1114,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           preferencesOnly: true,
           scrollable: false,
         ),
-        UpdateSettings(
-          enabled:
-              !_busy &&
-              _automation?.state.engaged != true &&
-              _automation?.commandPending != true,
-          install: _installUpdate,
-        ),
+        UpdateSettings(enabled: !_busy, install: _installUpdate),
         TextButton.icon(
           onPressed: _exitApplication,
           icon: const Icon(Icons.logout, size: 16),
