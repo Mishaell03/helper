@@ -31,6 +31,10 @@ jobs:
       - name: Native timing tests
         shell: pwsh
         run: |
+          cl /std:c++17 /EHsc /W4 /WX test/native/frameless_window_test.cpp user32.lib /Fe:frameless_window_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./frameless_window_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cl /std:c++17 /EHsc /W4 /WX test/native/typing_cadence_test.cpp /Fe:typing_cadence_test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./typing_cadence_test.exe

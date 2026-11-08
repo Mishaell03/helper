@@ -83,6 +83,7 @@ class BackgroundManager {
   std::unique_ptr<TextAutomation> automation_;
   std::unique_ptr<TaskViewGuard> task_view_guard_;
   std::unique_ptr<WindowWatchdog> watchdog_;
+  bool in_move_size_loop_ = false;
   HANDLE update_process_ = nullptr;
 };
 

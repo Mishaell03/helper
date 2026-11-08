@@ -41,6 +41,14 @@ void WindowWatchdog::DartPulse() {
   armed_.store(true); // Never mistake cold engine startup for a hung UI.
 }
 
+void WindowWatchdog::SetMoveSizeLoop(bool active) {
+  // User32's modal move/size loop can defer Flutter platform messages. Its
+  // native timer still runs: keep checking that instead of a queued Dart pulse.
+  NativePulse();
+  if (!active) dart_beat_.store(GetTickCount64());
+  move_size_loop_.store(active);
+}
+
 void WindowWatchdog::SetStage(int stage, int64_t block, int64_t length) {
   stage_.store(stage); block_.store(block); length_.store(length);
   std::ostringstream message;
@@ -72,8 +80,8 @@ void WindowWatchdog::Run() {
     const ULONGLONG native = native_beat_.load();
     const ULONGLONG dart = dart_beat_.load();
     if (!IsDebuggerPresent() && !tripped_.load() &&
-        ResponsivenessTimedOut(now, native, native_dialog_.load() ? native : dart,
-                               armed_.load(), visible_.load())) {
+        ResponsivenessTimedOut(now, native, dart, armed_.load(), visible_.load(),
+                               native_dialog_.load() || move_size_loop_.load())) {
       tripped_.store(true);
       acknowledged_.store(false);
       visible_.store(false);

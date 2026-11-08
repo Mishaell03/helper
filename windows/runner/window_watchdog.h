@@ -19,6 +19,7 @@ class WindowWatchdog {
   ~WindowWatchdog();
   void NativePulse();
   void DartPulse();
+  void SetMoveSizeLoop(bool active);
   void SetVisible(bool visible) { visible_.store(visible); }
   void SetStage(int stage, int64_t block, int64_t length);
   void SetNativeDialogOpen(bool open) {
@@ -39,6 +40,7 @@ class WindowWatchdog {
   std::atomic<bool> tripped_{false};
   std::atomic<bool> acknowledged_{false};
   std::atomic<bool> native_dialog_{false};
+  std::atomic<bool> move_size_loop_{false};
   std::atomic<int> stage_{0};
   std::atomic<int64_t> block_{0};
   std::atomic<int64_t> length_{0};

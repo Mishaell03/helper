@@ -3,6 +3,7 @@
 #include "window_composition.h"
 #include "capture_diagnostics.h"
 #include "update_launcher.h"
+#include "frameless_window.h"
 #include "utils.h"
 
 #include <flutter/standard_method_codec.h>
@@ -417,12 +418,13 @@ bool BackgroundManager::ApplyStyles() {
     }
     frame_changed = true;
   }
-  // Keep standard Windows sizing, but leave non-client painting to the
-  // existing frameless window_manager implementation.
+  // Keep standard Windows sizing without leaving a native caption available.
+  // The runner, not window_manager's internal flag, owns non-client painting.
   const LONG_PTR style = GetWindowLongPtr(window_, GWL_STYLE);
-  if ((style & WS_THICKFRAME) == 0) {
+  const LONG_PTR frameless_style = FramelessWindowStyle(style);
+  if (style != frameless_style) {
     SetLastError(ERROR_SUCCESS);
-    if (SetWindowLongPtr(window_, GWL_STYLE, style | WS_THICKFRAME) == 0 &&
+    if (SetWindowLongPtr(window_, GWL_STYLE, frameless_style) == 0 &&
         GetLastError() != ERROR_SUCCESS) {
       startup_error_ = WinError("Не удалось включить изменение размера окна", GetLastError());
       return false;
@@ -746,6 +748,12 @@ void BackgroundManager::SaveSize() {
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_ENTERSIZEMOVE || message == WM_EXITSIZEMOVE) {
+    in_move_size_loop_ = message == WM_ENTERSIZEMOVE;
+    if (watchdog_) watchdog_->SetMoveSizeLoop(in_move_size_loop_);
+    TraceCapture(in_move_size_loop_ ? "resize.begin" : "resize.end",
+                 window_, hidden_, parking_.parked());
+  }
   if (message == WM_TIMER && wparam == kWatchdogNativeTimer) {
     if (watchdog_) watchdog_->NativePulse();
     return true;
@@ -765,7 +773,11 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
   }
   if (message == WM_DISPLAYCHANGE && parking_.parked()) parking_.Repark(window_);
   if (message == WM_SHOWWINDOW) TraceCapture(wparam ? "WM_SHOWWINDOW.show" : "WM_SHOWWINDOW.hide", window_, hidden_, parking_.parked());
-  if (message == WM_WINDOWPOSCHANGED) TraceCapture("WM_WINDOWPOSCHANGED", window_, hidden_, parking_.parked());
+  // No synchronous filesystem flush/DWM queries for every pixel of a drag.
+  // The begin/end records above retain the useful final size diagnostics.
+  if (message == WM_WINDOWPOSCHANGED && !in_move_size_loop_) {
+    TraceCapture("WM_WINDOWPOSCHANGED", window_, hidden_, parking_.parked());
+  }
   if (message == WM_STYLECHANGED && lparam) {
     const auto* change = reinterpret_cast<const STYLESTRUCT*>(lparam);
     const DWORD changed = change->styleOld ^ change->styleNew;

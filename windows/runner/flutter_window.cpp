@@ -4,6 +4,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "capture_exclusion.h"
+#include "frameless_window.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project, bool start_hidden)
     : project_(project), start_hidden_(start_hidden) {}
@@ -34,8 +35,8 @@ bool FlutterWindow::OnCreate() {
   background_manager_ = std::make_unique<BackgroundManager>(
       GetHandle(), flutter_controller_->engine()->messenger(), start_hidden_);
 
-  // Dart configures the frameless style; BackgroundManager owns DWM alpha and
-  // the final presentation. Do not show a decorated/unprotected window here.
+  // Runner owns the frameless style/non-client messages; BackgroundManager owns
+  // DWM alpha and final presentation. Do not show an unprotected window here.
 
   // Request the initial frame while Dart prepares the window for display.
   flutter_controller_->ForceRedraw();
@@ -56,6 +57,11 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                                 LPARAM const lparam) noexcept {
+  // Enforce this before Flutter/plugin delegates, including during startup and
+  // User32's nested move/size loop. Never fall back to classic frame painting.
+  if (const auto frame = HandleFramelessMessage(hwnd, message, wparam, lparam)) {
+    return *frame;
+  }
   if (message == kRefreshHelperFrame) {
     if (flutter_controller_) flutter_controller_->ForceRedraw();
     return 0;
@@ -108,5 +114,6 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
   }
 
+  if (message == WM_NCACTIVATE) return TRUE;
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
 }

@@ -10,6 +10,10 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // Windows' replacement "ghost" HWND has its own standard frame and does not
+  // inherit our protected frameless composition. Our native watchdog handles
+  // actual stalls without replacing the window (including during live resize).
+  DisableProcessWindowsGhosting();
   using ScopedHandle = std::unique_ptr<void, decltype(&CloseHandle)>;
   auto command_line_arguments = GetCommandLineArguments();
   const bool start_hidden = std::find(command_line_arguments.begin(),

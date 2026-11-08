@@ -11,6 +11,40 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class HelperWinTest {
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
+    public static void AssertFrameless(IntPtr hwnd) {
+        int style = GetWindowLong(hwnd, -16);
+        if ((style & 0x00C00000) != 0 || (style & 0x00040000) == 0)
+            throw new Exception("Native caption returned or resizing was disabled.");
+        Rect outer, client;
+        Point origin = new Point();
+        if (!GetWindowRect(hwnd, out outer) || !GetClientRect(hwnd, out client) || !ClientToScreen(hwnd, ref origin))
+            throw new Exception("Could not inspect native frame geometry.");
+        if (origin.X != outer.Left || origin.Y != outer.Top ||
+            client.Right != outer.Right - outer.Left || client.Bottom != outer.Bottom - outer.Top)
+            throw new Exception("Native non-client frame/title bar occupies space around Flutter.");
+    }
+    public static void CheckResizeFrame(IntPtr hwnd) {
+        Rect original;
+        if (!GetWindowRect(hwnd, out original)) throw new Exception("Missing window rectangle.");
+        try {
+            for (int step = 0; step < 12; ++step) {
+                // SWP_FRAMECHANGED forces both native frame calculation and paint.
+                if (!SetWindowPos(hwnd, IntPtr.Zero, 0, 0,
+                    original.Right - original.Left + step, original.Bottom - original.Top + step, 0x0036))
+                    throw new Exception("Native resize failed.");
+                AssertFrameless(hwnd);
+            }
+        } finally {
+            SetWindowPos(hwnd, IntPtr.Zero, 0, 0,
+                original.Right - original.Left, original.Bottom - original.Top, 0x0036);
+        }
+    }
     public delegate bool EnumProc(IntPtr hwnd, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
@@ -134,6 +168,8 @@ try {
     if (($styles -band 0x80) -eq 0 -or ($styles -band 0x40000) -ne 0) {
         throw 'Expected WS_EX_TOOLWINDOW and no WS_EX_APPWINDOW.'
     }
+    [HelperWinTest]::AssertFrameless($script:hwnd)
+    [HelperWinTest]::CheckResizeFrame($script:hwnd)
 
     # A real, independent native window holds focus while shortcuts are tested.
     $probe = [HelperWinTest]::CreateWindowEx(0, 'STATIC', 'Global hotkey test',
@@ -149,6 +185,7 @@ try {
     if ($app.HasExited) { throw 'Hiding terminated Helper.' }
     [HelperWinTest]::Shortcut(0x7b)
     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not restore Helper.'
+    [HelperWinTest]::AssertFrameless($script:hwnd)
 
     [void][HelperWinTest]::PostMessage($script:hwnd, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'WM_CLOSE did not hide Helper.'
