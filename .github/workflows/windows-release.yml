@@ -43,6 +43,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./capture_parking_geometry_test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /std:c++17 /EHsc /W4 /WX test/native/task_view_chord_test.cpp /Fe:task_view_chord_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./task_view_chord_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build release packages
         shell: pwsh
         run: |

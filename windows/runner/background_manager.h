@@ -14,6 +14,7 @@
 #include "text_automation.h"
 #include "startup_visibility.h"
 #include "capture_window_parking.h"
+#include "task_view_guard.h"
 
 // Also used by a second launch to activate the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
@@ -48,7 +49,8 @@ class BackgroundManager {
   bool ReadShortcut(const Value& value, Shortcut* shortcut);
   bool Valid(const Shortcut& shortcut) const;
   Value State() const;
-  void Hide();
+  void Hide(bool persist_size = true);
+  void HideForTaskView();
   bool Show();
   bool ShowCountdownInactive();
   bool ShowWindowSafely(bool activate);
@@ -78,6 +80,7 @@ class BackgroundManager {
   std::string startup_error_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;
   std::unique_ptr<TextAutomation> automation_;
+  std::unique_ptr<TaskViewGuard> task_view_guard_;
 };
 
 #endif

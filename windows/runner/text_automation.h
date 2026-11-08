@@ -20,7 +20,8 @@ class TextAutomation {
   TextAutomation(HWND window, flutter::BinaryMessenger* messenger,
                  std::function<bool(UINT, UINT)> dispatch_control_hotkey,
                  std::function<bool()> has_emergency_stop,
-                 std::function<bool()> show_countdown);
+                 std::function<bool()> show_countdown,
+                 std::function<void(UINT, bool)> task_view_requested);
   ~TextAutomation();
   bool HandleMessage(UINT message, WPARAM wparam);
   void RequestStart();
@@ -63,6 +64,7 @@ class TextAutomation {
   std::array<bool, 256> release_passthrough_{};
   std::function<bool()> has_emergency_stop_;
   std::function<bool()> show_countdown_;
+  std::function<void(UINT, bool)> task_view_requested_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;
   Phase phase_ = Phase::idle;
   std::wstring text_;

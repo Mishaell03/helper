@@ -102,7 +102,11 @@ BackgroundManager::BackgroundManager(HWND window,
   automation_ = std::make_unique<TextAutomation>(window_, messenger,
       [this](UINT key, UINT modifiers) { return DispatchControlHotkey(key, modifiers); },
       [this]() { return bindings_[4].id != 0; },
-      [this]() { return ShowCountdownInactive(); });
+      [this]() { return ShowCountdownInactive(); },
+      [this](UINT win_key, bool replay) {
+        HideForTaskView();
+        if (replay && task_view_guard_) task_view_guard_->ReplaySuppressedChord(win_key);
+      });
 
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/background", &flutter::StandardMethodCodec::GetInstance());
@@ -206,9 +210,14 @@ BackgroundManager::BackgroundManager(HWND window,
       result->NotImplemented();
     }
   });
+  task_view_guard_ = std::make_unique<TaskViewGuard>([this]() { HideForTaskView(); });
+  if (!task_view_guard_->active()) {
+    startup_error_ += "Не удалось включить скрытие перед Win+Tab. Проверьте показ панели в обзоре задач. ";
+  }
 }
 
 BackgroundManager::~BackgroundManager() {
+  task_view_guard_.reset();
   automation_.reset();
   if (prepared_) SaveSize();
   channel_->SetMethodCallHandler(nullptr);
@@ -399,11 +408,18 @@ bool BackgroundManager::PreparePresentation() {
   return true;
 }
 
-void BackgroundManager::Hide() {
+void BackgroundManager::HideForTaskView() {
+  TraceCapture("task_view.hide", window_, hidden_, parking_.parked());
+  automation_->Pause("Открыт обзор задач Windows. Ввод приостановлен, позиция сохранена.");
+  // Keep the keyboard hook short: no registry writes before the shell snapshot.
+  Hide(false);
+}
+
+void BackgroundManager::Hide(bool persist_size) {
   TraceCapture("hide.begin", window_, hidden_, parking_.parked());
   visibility_.Hide();
   if (hidden_) return;
-  if (prepared_) SaveSize();
+  if (prepared_ && persist_size) SaveSize();
   hidden_ = true;
   if (UseStableCaptureSurface() && parking_.Park(window_)) {
     TraceCapture("hide.parked", window_, hidden_, parking_.parked());

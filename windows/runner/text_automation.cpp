@@ -66,10 +66,12 @@ TextAutomation* TextAutomation::observer_ = nullptr;
 TextAutomation::TextAutomation(HWND window, flutter::BinaryMessenger* messenger,
     std::function<bool(UINT, UINT)> dispatch_control_hotkey,
     std::function<bool()> has_emergency_stop,
-    std::function<bool()> show_countdown)
+    std::function<bool()> show_countdown,
+    std::function<void(UINT, bool)> task_view_requested)
     : window_(window), dispatch_control_hotkey_(std::move(dispatch_control_hotkey)),
       has_emergency_stop_(std::move(has_emergency_stop)),
-      show_countdown_(std::move(show_countdown)) {
+      show_countdown_(std::move(show_countdown)),
+      task_view_requested_(std::move(task_view_requested)) {
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/automation", &flutter::StandardMethodCodec::GetInstance());
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
@@ -363,6 +365,22 @@ LRESULT CALLBACK TextAutomation::KeyboardHook(int code, WPARAM wparam, LPARAM lp
       const bool down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
       const bool was_down = self->physical_keys_[vk];
       self->physical_keys_[vk] = down;
+      const bool win = self->physical_keys_[VK_LWIN] || self->physical_keys_[VK_RWIN];
+      const bool other_modifier = self->physical_keys_[VK_CONTROL] ||
+          self->physical_keys_[VK_LCONTROL] || self->physical_keys_[VK_RCONTROL] ||
+          self->physical_keys_[VK_MENU] || self->physical_keys_[VK_LMENU] ||
+          self->physical_keys_[VK_RMENU] || self->physical_keys_[VK_SHIFT] ||
+          self->physical_keys_[VK_LSHIFT] || self->physical_keys_[VK_RSHIFT];
+      if (vk == VK_TAB && down && !was_down && win && !other_modifier) {
+        const UINT win_key = self->physical_keys_[VK_LWIN] ? VK_LWIN : VK_RWIN;
+        const bool replay = !self->release_passthrough_[win_key];
+        const auto requested = self->task_view_requested_;
+        self->Pause("Открыт обзор задач Windows. Позиция сохранена.");
+        requested(win_key, replay);
+        // If Win was already down before typing began, pass the real Tab. If
+        // its down was blocked, the callback delivers exactly one full chord.
+        return replay ? 1 : CallNextHookEx(nullptr, code, wparam, lparam);
+      }
       if (down && !was_down && !Modifier(vk)) {
         const auto held = [self](int a, int b, int c) {
           return self->physical_keys_[a] || self->physical_keys_[b] || self->physical_keys_[c];

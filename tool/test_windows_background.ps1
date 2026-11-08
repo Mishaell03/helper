@@ -56,6 +56,16 @@ public static class HelperWinTest {
         keybd_event(0x10, 0, 2, UIntPtr.Zero);
         keybd_event(0x11, 0, 2, UIntPtr.Zero);
     }
+    public static void TaskView() {
+        keybd_event(0x5B, 0, 0, UIntPtr.Zero);
+        keybd_event(0x09, 0, 0, UIntPtr.Zero);
+        keybd_event(0x09, 0, 2, UIntPtr.Zero);
+        keybd_event(0x5B, 0, 2, UIntPtr.Zero);
+    }
+    public static void Escape() {
+        keybd_event(0x1B, 0, 0, UIntPtr.Zero);
+        keybd_event(0x1B, 0, 2, UIntPtr.Zero);
+    }
 }
 '@
 
@@ -146,6 +156,16 @@ try {
     $second = Start-Process $Executable -PassThru
     if (-not $second.WaitForExit(10000)) { throw 'A second application instance remained alive.' }
     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Second launch did not restore the existing window.'
+
+    [HelperWinTest]::TaskView()
+    Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Win+Tab did not hide Helper.'
+    if ($app.HasExited) { throw 'Win+Tab terminated Helper.' }
+    Start-Sleep -Milliseconds 700
+    [HelperWinTest]::Escape()
+    Start-Sleep -Milliseconds 300
+    if ([HelperWinTest]::IsWindowVisible($script:hwnd)) { throw 'Leaving Task View reopened Helper automatically.' }
+    [HelperWinTest]::Shortcut(0x7b)
+    Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not restore Helper after Win+Tab.'
 
     [void][HelperWinTest]::SetForegroundWindow($probe)
     [HelperWinTest]::Shortcut(0x73)

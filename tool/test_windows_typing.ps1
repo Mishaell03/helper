@@ -21,6 +21,11 @@ public static class TypingProbe {
         keybd_event(0x10, 0, 2, UIntPtr.Zero);
         keybd_event(0x11, 0, 2, UIntPtr.Zero);
     }
+    public static void TaskView() {
+        keybd_event(0x5B, 0, 0, UIntPtr.Zero);
+        Key(0x09);
+        keybd_event(0x5B, 0, 2, UIntPtr.Zero);
+    }
 }
 '@
 
@@ -111,6 +116,19 @@ try {
     [TypingProbe]::Hotkey(0x77)
     Pump-For 5500
     if ($target.Text.Length -ne 0) { throw 'Stop during countdown still allowed text insertion.' }
+
+    Start-Input
+    Wait-For { $target.Text.Length -ge 3 } 'Win+Tab check did not start.'
+    [TypingProbe]::TaskView()
+    Pump-For 700
+    [TypingProbe]::Key(0x1B) # Close actual Task View; typing must stay paused.
+    Pump-For 300
+    $taskViewPaused = $target.Text
+    Pump-For 1200
+    if ($target.Text -ne $taskViewPaused) { throw 'Win+Tab did not pause typing.' }
+    $targetForm.Activate(); [void]$target.Focus()
+    [TypingProbe]::Hotkey(0x76)
+    Wait-For { $target.Text -eq [TypingProbe]::Sample } 'Win+Tab lost the text position or inserted an unrelated Tab.'
 
     Start-Input
     Wait-For { $target.Text.Length -ge 3 } 'Manual input check did not start.'

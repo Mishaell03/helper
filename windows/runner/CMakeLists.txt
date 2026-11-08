@@ -12,6 +12,7 @@ add_executable(${BINARY_NAME} WIN32
   "capture_exclusion.cpp"
   "capture_diagnostics.cpp"
   "capture_window_parking.cpp"
+  "task_view_guard.cpp"
   "window_composition.cpp"
   "text_automation.cpp"
   "main.cpp"
