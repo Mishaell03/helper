@@ -126,7 +126,7 @@ class BlockCard extends StatelessWidget {
                 ),
                 Row(
                   children: [
-                    if (block.archived)
+                    if (block.insertionCompleted)
                       const IgnorePointer(
                         child: Padding(
                           padding: EdgeInsets.only(right: 6),
@@ -134,7 +134,7 @@ class BlockCard extends StatelessWidget {
                             Icons.check,
                             size: 14,
                             color: Colors.white38,
-                            semanticLabel: 'Архивный блок',
+                            semanticLabel: 'Текст введён полностью',
                           ),
                         ),
                       ),

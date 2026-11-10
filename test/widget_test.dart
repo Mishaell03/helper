@@ -183,21 +183,14 @@ void main() {
       await tester.tap(find.byTooltip('Архив'));
       await settle(tester);
       expect(find.byType(BlockCard), findsNWidgets(2));
-      expect(find.byIcon(Icons.check), findsNWidgets(2));
+      expect(find.byIcon(Icons.check), findsNothing);
       expect(tester.getSize(card(ids[0])).height, BlockCard.extent);
-      expect(
-        find.ancestor(
-          of: find.byIcon(Icons.check).first,
-          matching: find.byType(IgnorePointer),
-        ),
-        findsWidgets,
-      );
       await navigateSlot(tester, 1);
       expect(selectedSlot(tester), ids[1]);
       await tester.tap(action(ids[0], 'Восстановить из архива'));
       await settle(tester);
       expect(selectedSlot(tester), ids[1]);
-      expect(find.byIcon(Icons.check), findsOneWidget);
+      expect(find.byIcon(Icons.check), findsNothing);
       expect(find.byKey(const Key('fullBlockContent')), findsNothing);
       await tester.tap(find.byTooltip('Закреплённые'));
       await settle(tester);

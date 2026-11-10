@@ -54,7 +54,9 @@ void main() {
       );
       await controller.flushArchive();
       expect((await repository.block(id)).archived, isTrue);
+      expect((await repository.block(id)).insertionCompleted, isTrue);
       expect((await repository.block(otherId)).archived, isFalse);
+      expect((await repository.block(otherId)).insertionCompleted, isFalse);
       expect((await repository.block(id)).content, 'Полный текст 😀');
       expect(refreshes, 1);
       await repository.setArchived(id, false);
@@ -64,6 +66,7 @@ void main() {
       ); // Repeated completed snapshots are not new operations.
       await controller.flushArchive();
       expect((await repository.block(id)).archived, isFalse);
+      expect((await repository.block(id)).insertionCompleted, isTrue);
       expect(refreshes, 1);
       await controller.start(id);
       backend.emit(
@@ -92,6 +95,7 @@ void main() {
         backend.emit(phase, position: backend.data['total'] as int);
         await controller.flushArchive();
         expect((await repository.block(id)).archived, isFalse);
+        expect((await repository.block(id)).insertionCompleted, isFalse);
       },
     );
   }
@@ -105,6 +109,7 @@ void main() {
       backend.emit(AutomationPhase.completed, position: 2);
       await controller.flushArchive();
       expect((await repository.block(id)).archived, isFalse);
+      expect((await repository.block(id)).insertionCompleted, isFalse);
       await controller.start(id);
       await controller.cancelCountdown();
       await controller.flushArchive();
@@ -155,10 +160,12 @@ void main() {
         expect(controller.failure, isNull);
         expect(errors, hasLength(1));
         expect((await repository.block(id)).archived, isFalse);
+        expect((await repository.block(id)).insertionCompleted, isFalse);
         expect((await repository.block(id)).content, 'Сохранить исходник');
         await connection.execute('DROP TRIGGER reject_archive');
         await repository.setArchived(id, true);
         expect((await repository.block(id)).archived, isTrue);
+        expect((await repository.block(id)).insertionCompleted, isFalse);
       } finally {
         await connection.close();
       }

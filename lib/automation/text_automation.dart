@@ -164,7 +164,7 @@ class TextAutomationController extends ChangeNotifier {
     // Capture the native operation's ID, never the UI's current selection.
     _archiveTail = _archiveTail.then((_) async {
       try {
-        await repository.setArchived(blockId, true);
+        await repository.completeInsertion(blockId);
         if (!_disposed) await onArchived?.call();
       } catch (_) {
         if (!_disposed) {

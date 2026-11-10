@@ -107,6 +107,13 @@ void main() {
     await settle(tester);
     expect(find.text('Тестовый блок'), findsOneWidget);
     expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byIcon(Icons.check),
+        matching: find.byType(IgnorePointer),
+      ),
+      findsWidgets,
+    );
     await doubleTap(tester, find.text('Тестовый блок'));
     await settle(tester);
     expect(
@@ -124,6 +131,19 @@ void main() {
     await settle(tester);
     expect(
       markdown.blocks.firstWhere((block) => block.id == id).archived,
+      isFalse,
+    );
+    await tester.tap(find.byTooltip('Все блоки'));
+    await settle(tester);
+    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(
+      markdown.blocks.firstWhere((block) => block.id == id).insertionCompleted,
+      isTrue,
+    );
+    expect(
+      markdown.blocks
+          .firstWhere((block) => block.id == otherId)
+          .insertionCompleted,
       isFalse,
     );
   });

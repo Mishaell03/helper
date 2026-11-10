@@ -40,6 +40,10 @@ void main() {
       expect(saved.fileId, fileId);
       expect(saved.pinned, isTrue);
       expect(saved.archived, isTrue);
+      expect(
+        saved.insertionCompleted,
+        isFalse,
+      ); // Manual archive is not typing.
       expect(await repository.showDescriptions(), isFalse);
       final full = await repository.block(saved.id);
       expect(full.content, '\r\nТекст  \r\n\r\n');
@@ -129,75 +133,105 @@ void main() {
     }
   });
 
-  test(
-    'База версии 1 обновляется без потери данных; старые блоки вне архива',
-    () async {
-      final legacyPath = '${directory.path}/legacy.sqlite3';
-      final doc = document('старый.md', '# Старый\n\nСохранить');
-      final legacy = await databaseFactoryFfi.openDatabase(
-        legacyPath,
-        options: OpenDatabaseOptions(
-          version: 1,
-          onCreate: (db, _) async {
-            await db.execute('''CREATE TABLE imported_files (
+  for (final version in [1, 2]) {
+    test(
+      'База версии $version обновляется без потери данных и выдуманных отметок ввода',
+      () async {
+        final legacyPath = '${directory.path}/legacy.sqlite3';
+        final doc = document('старый.md', '# Старый\n\nСохранить');
+        final legacy = await databaseFactoryFfi.openDatabase(
+          legacyPath,
+          options: OpenDatabaseOptions(
+            version: version,
+            onCreate: (db, _) async {
+              await db.execute('''CREATE TABLE imported_files (
           id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL,
           imported_at INTEGER NOT NULL, block_count INTEGER NOT NULL,
           original_content TEXT NOT NULL, original_bytes BLOB NOT NULL)''');
-            await db.execute(
-              '''CREATE TABLE blocks (
+              await db.execute(
+                '''CREATE TABLE blocks (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           file_id INTEGER NOT NULL REFERENCES imported_files(id) ON DELETE CASCADE,
           position INTEGER NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
           content TEXT NOT NULL, source TEXT NOT NULL,
           pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)), UNIQUE(file_id, position))''',
-            );
-            await db.execute('CREATE INDEX blocks_file ON blocks(file_id)');
-            await db.execute(
-              'CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
-            );
-            await db.insert('imported_files', {
-              'id': 7,
-              'filename': doc.filename,
-              'imported_at': 0,
-              'block_count': 1,
-              'original_content': doc.text,
-              'original_bytes': doc.bytes,
-            });
-            await db.insert('blocks', {
-              'id': 42,
-              'file_id': 7,
-              'position': 0,
-              'title': 'Старый',
-              'description': '',
-              'content': '\nСохранить',
-              'source': doc.text,
-              'pinned': 1,
-            });
-            await db.insert('preferences', {
-              'key': 'show_descriptions',
-              'value': 'false',
-            });
-          },
-        ),
+              );
+              await db.execute('CREATE INDEX blocks_file ON blocks(file_id)');
+              if (version == 2) {
+                await db.execute(
+                  'ALTER TABLE blocks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0',
+                );
+              }
+              await db.execute(
+                'CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+              );
+              await db.insert('imported_files', {
+                'id': 7,
+                'filename': doc.filename,
+                'imported_at': 0,
+                'block_count': 1,
+                'original_content': doc.text,
+                'original_bytes': doc.bytes,
+              });
+              await db.insert('blocks', {
+                'id': 42,
+                'file_id': 7,
+                'position': 0,
+                'title': 'Старый',
+                'description': '',
+                'content': '\nСохранить',
+                'source': doc.text,
+                'pinned': 1,
+                if (version == 2) 'archived': 1,
+              });
+              await db.insert('preferences', {
+                'key': 'show_descriptions',
+                'value': 'false',
+              });
+            },
+          ),
+        );
+        await legacy.close();
+        var upgraded = await MarkdownRepository.open(databasePath: legacyPath);
+        try {
+          final block = (await upgraded.blocks()).single;
+          expect(block.id, 42);
+          expect(block.archived, version == 2);
+          expect(block.insertionCompleted, isFalse);
+          expect(block.pinned, isTrue);
+          expect(await upgraded.showDescriptions(), isFalse);
+          expect((await upgraded.originalFile(7)).bytes, doc.bytes);
+          expect((await upgraded.block(42)).source, doc.text);
+          await upgraded.setArchived(42, true);
+          await upgraded.close();
+          upgraded = await MarkdownRepository.open(databasePath: legacyPath);
+          expect((await upgraded.block(42)).archived, isTrue);
+          expect((await upgraded.block(42)).id, 42);
+        } finally {
+          await upgraded.close();
+        }
+      },
+    );
+  }
+
+  test(
+    'Отметка полного ввода сохраняется после восстановления и перезапуска',
+    () async {
+      await repository.importDocument(
+        document('ввод.txt', 'Полный исходный текст'),
       );
-      await legacy.close();
-      var upgraded = await MarkdownRepository.open(databasePath: legacyPath);
-      try {
-        final block = (await upgraded.blocks()).single;
-        expect(block.id, 42);
-        expect(block.archived, isFalse);
-        expect(block.pinned, isTrue);
-        expect(await upgraded.showDescriptions(), isFalse);
-        expect((await upgraded.originalFile(7)).bytes, doc.bytes);
-        expect((await upgraded.block(42)).source, doc.text);
-        await upgraded.setArchived(42, true);
-        await upgraded.close();
-        upgraded = await MarkdownRepository.open(databasePath: legacyPath);
-        expect((await upgraded.block(42)).archived, isTrue);
-        expect((await upgraded.block(42)).id, 42);
-      } finally {
-        await upgraded.close();
-      }
+      final id = (await repository.blocks()).single.id;
+      await repository.completeInsertion(id);
+      await repository.setArchived(id, false);
+      await repository.close();
+      repository = await MarkdownRepository.open(databasePath: databasePath);
+      final saved = (await repository.blocks()).single;
+      expect(saved.id, id);
+      expect(saved.archived, isFalse);
+      expect(saved.insertionCompleted, isTrue);
+      expect((await repository.block(id)).content, 'Полный исходный текст');
+      await repository.setArchived(id, true);
+      expect((await repository.block(id)).insertionCompleted, isTrue);
     },
   );
 
