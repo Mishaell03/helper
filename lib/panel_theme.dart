@@ -57,7 +57,7 @@ ThemeData buildPanelTheme() => ThemeData(
     textStyle: const TextStyle(color: Colors.white, fontSize: 12, height: 1.3),
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
     waitDuration: const Duration(milliseconds: 500),
-    showDuration: const Duration(seconds: 3),
+    showDuration: const Duration(seconds: 5),
   ),
   textButtonTheme: TextButtonThemeData(
     style: TextButton.styleFrom(foregroundColor: Colors.white70),

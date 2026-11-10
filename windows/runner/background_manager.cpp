@@ -31,6 +31,7 @@ constexpr UINT kSlotModifiers = MOD_CONTROL | MOD_SHIFT;
 constexpr int kSlotToggleId = 0x4801;
 constexpr int kSlotPreviousId = 0x4802;
 constexpr int kSlotNextId = 0x4803;
+constexpr int kViewerEscapeId = 0x4804;
 double WindowScale(HWND window) {
   const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
   return FlutterDesktopGetDpiForMonitor(monitor) / 96.0;
@@ -233,6 +234,16 @@ BackgroundManager::BackgroundManager(HWND window,
       }
       recording_ = *enabled;
       UpdateSlotNavigation();
+      UpdateViewerEscape();
+      result->Success();
+    } else if (method == "setViewerEscapeEnabled") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      if (!enabled) {
+        result->Error("invalid_argument", "Ожидается режим Escape для просмотра.");
+        return;
+      }
+      viewer_escape_requested_ = *enabled;
+      UpdateViewerEscape();
       result->Success();
     } else if (method == "setAutostart") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
@@ -293,6 +304,7 @@ BackgroundManager::~BackgroundManager() {
   automation_.reset();
   ReleaseSlotNavigation();
   if (slot_toggle_registered_) UnregisterHotKey(window_, kSlotToggleId);
+  ReleaseViewerEscape();
   if (prepared_) SaveSize();
   channel_->SetMethodCallHandler(nullptr);
   for (const auto& binding : bindings_) {
@@ -349,12 +361,46 @@ bool BackgroundManager::DispatchControlHotkey(UINT key, UINT modifiers) const {
     PostMessage(window_, WM_HOTKEY, kSlotToggleId, MAKELPARAM(modifiers, key));
     return true;
   }
+  if (viewer_escape_registered_ && key == VK_ESCAPE && modifiers == 0) {
+    PostMessage(window_, WM_HOTKEY, kViewerEscapeId, MAKELPARAM(0, VK_ESCAPE));
+    return true;
+  }
   return false;
 }
 
 bool BackgroundManager::SlotWindowVisible() const {
   return !hidden_ && visibility_.may_show() && !parking_.parked() &&
       IsWindowVisible(window_) && !IsIconic(window_);
+}
+
+void BackgroundManager::ReleaseViewerEscape() {
+  if (!viewer_escape_registered_) return;
+  UnregisterHotKey(window_, kViewerEscapeId);
+  viewer_escape_registered_ = false;
+}
+
+void BackgroundManager::UpdateViewerEscape() {
+  // Dart requests Escape only for an open viewer under the mouse, never for
+  // the block list or a modal route. Native visibility also handles parking.
+  if (!ViewerEscapeAllowed()) {
+    ReleaseViewerEscape();
+    return;
+  }
+  if (viewer_escape_registered_) return;
+  if (RegisterHotKey(window_, kViewerEscapeId, MOD_NOREPEAT, VK_ESCAPE)) {
+    viewer_escape_registered_ = true;
+  } else {
+    viewer_escape_requested_ = false; // No retries on every resize/message.
+    channel_->InvokeMethod("warning", std::make_unique<Value>(
+        "Escape недоступен для просмотра. Используйте стрелку «Назад»."));
+  }
+}
+
+bool BackgroundManager::ViewerEscapeAllowed() const {
+  POINT cursor{};
+  return viewer_escape_requested_ && SlotWindowVisible() && !recording_ && !in_move_size_loop_ &&
+      !import_dialog_ && GetCursorPos(&cursor) &&
+      GetAncestor(WindowFromPoint(cursor), GA_ROOT) == window_;
 }
 
 void BackgroundManager::ReleaseSlotNavigation() {
@@ -609,6 +655,7 @@ void BackgroundManager::Hide(bool persist_size) {
   if (watchdog_) watchdog_->SetVisible(false);
   TraceCapture("hide.begin", window_, hidden_, parking_.parked());
   visibility_.Hide();
+  ReleaseViewerEscape();
   slot_navigation_.Hide();
   ReleaseSlotNavigation();
   if (hidden_) return;
@@ -677,6 +724,7 @@ bool BackgroundManager::ShowWindowSafely() {
   }
   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
   if (hidden_) return false;
+  UpdateViewerEscape();
   if (watchdog_) watchdog_->SetVisible(true);
   PostMessage(window_, kRefreshHelperFrame, 0, 0);
   RedrawWindow(window_, nullptr, nullptr,
@@ -710,6 +758,7 @@ void BackgroundManager::PickMarkdownFiles(
   }
   ReleaseSlotNavigation();
   bool activation_restored = true;
+  ReleaseViewerEscape();
   HRESULT status = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(import_dialog_.GetAddressOf()));
   const COMDLG_FILTERSPEC filters[] = {
@@ -727,6 +776,7 @@ void BackgroundManager::PickMarkdownFiles(
     if (!SetKeyboardActivation(true)) {
       import_dialog_.Reset();
       UpdateSlotNavigation();
+      UpdateViewerEscape();
       result->Error("window_activation_error", "Не удалось активировать диалог импорта.");
       return;
     }
@@ -765,6 +815,7 @@ void BackgroundManager::PickMarkdownFiles(
   }
   import_dialog_.Reset();
   UpdateSlotNavigation();
+  UpdateViewerEscape();
   if (!activation_restored) {
     result->Error("window_activation_error", "Не удалось восстановить режим окна после импорта.");
   } else if (SUCCEEDED(status) || status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
@@ -897,11 +948,14 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
       (message == WM_SHOWWINDOW && wparam == FALSE)) {
     slot_navigation_.Hide();
     ReleaseSlotNavigation();
+    ReleaseViewerEscape();
   } else if ((message == WM_SIZE || message == WM_SHOWWINDOW) && SlotWindowVisible()) {
     UpdateSlotNavigation();
+    UpdateViewerEscape();
   }
   if (message == WM_ENTERSIZEMOVE || message == WM_EXITSIZEMOVE) {
     in_move_size_loop_ = message == WM_ENTERSIZEMOVE;
+    UpdateViewerEscape();
     if (watchdog_) watchdog_->SetMoveSizeLoop(in_move_size_loop_);
     TraceCapture(in_move_size_loop_ ? "resize.begin" : "resize.end",
                  window_, hidden_, parking_.parked());
@@ -1013,6 +1067,17 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
   if (message != WM_HOTKEY) return false;
   const UINT modifiers = static_cast<UINT>(LOWORD(lparam)) & 0x0fu;
   const UINT key = static_cast<UINT>(HIWORD(lparam));
+  if (wparam == kViewerEscapeId) {
+    if (viewer_escape_registered_ && ViewerEscapeAllowed() &&
+        modifiers == 0 && key == VK_ESCAPE) {
+      viewer_escape_requested_ = false;
+      ReleaseViewerEscape();
+      channel_->InvokeMethod("closeViewer", nullptr);
+    } else if (!ViewerEscapeAllowed()) {
+      ReleaseViewerEscape();
+    }
+    return true;
+  }
   if (wparam == kSlotToggleId && slot_toggle_registered_ &&
       modifiers == kSlotModifiers && key == VK_F3) {
     if (recording_ && GetForegroundWindow() == window_) {

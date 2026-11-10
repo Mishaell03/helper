@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +12,7 @@ import 'package:helper/panel_theme.dart';
 import 'package:helper/markdown/markdown_controller.dart';
 import 'package:helper/markdown/block_card.dart';
 import 'package:helper/markdown/markdown_repository.dart';
+import 'support/double_tap.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +21,7 @@ void main() {
   late MarkdownController controller;
   String? clipboard;
   var automationStarts = 0;
+  final viewerEscapeRequests = <bool>[];
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('helper_ui_');
@@ -27,6 +31,7 @@ void main() {
     controller = MarkdownController(repository);
     clipboard = null;
     automationStarts = 0;
+    viewerEscapeRequests.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
           if (call.method == 'Clipboard.setData') {
@@ -54,6 +59,9 @@ void main() {
         .setMockMethodCallHandler(const MethodChannel('helper/background'), (
           call,
         ) async {
+          if (call.method == 'setViewerEscapeEnabled') {
+            viewerEscapeRequests.add(call.arguments as bool);
+          }
           if (call.method == 'getSettings') {
             return {
               'toggle': Hotkey.defaultToggle.toMap(),
@@ -146,6 +154,30 @@ void main() {
       .id;
 
   testWidgets(
+    'Уведомления с кнопкой закрытия исчезают через пять секунд',
+    (tester) async {
+      tester.binding.platformDispatcher.accessibilityFeaturesTestValue =
+          const FakeAccessibilityFeatures(accessibleNavigation: true);
+      addTearDown(
+        tester.binding.platformDispatcher.clearAccessibilityFeaturesTestValue,
+      );
+      await open(tester);
+      BackgroundService.instance.onWarning!('Первое уведомление');
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 4));
+      expect(find.text('Первое уведомление'), findsOneWidget);
+      BackgroundService.instance.onWarning!('Новое уведомление');
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 4));
+      expect(find.text('Новое уведомление'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Новое уведомление'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
     'Глобальная навигация выбирает и открывает слоты без фокуса и запуска ввода',
     (tester) async {
       final input = await file(
@@ -157,6 +189,13 @@ void main() {
       await navigateSlot(tester, 1); // Empty list.
       await importFiles(tester);
       final ids = controller.blocks.map((block) => block.id).toList();
+      await tester.tap(find.text('Два'));
+      await tester.pump();
+      expect(selectedSlot(tester), ids[1]);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      await tester.tap(find.text('Один'));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(selectedSlot(tester), ids.first);
       await navigateSlot(tester, -1);
       expect(selectedSlot(tester), ids.first);
       FocusManager.instance.primaryFocus?.unfocus();
@@ -171,7 +210,7 @@ void main() {
       await tester.tap(find.text('Отмена'));
       await settle(tester);
       expect(selectedSlot(tester), ids[1]);
-      await tester.tap(find.text('Два'));
+      await doubleTap(tester, find.text('Два'));
       await settle(tester);
       await navigateSlot(tester, 1);
       expect(
@@ -219,6 +258,21 @@ void main() {
       expect(selectedSlot(tester), last.id);
       await navigateSlot(tester, -1);
       expect(selectedSlot(tester), first.id);
+      await doubleTap(tester, find.text('Три'));
+      await settle(tester);
+      await tester.tap(find.byTooltip('Назад (Esc)'));
+      await settle(tester);
+      expect(find.byType(BlockCard), findsNWidgets(2));
+      expect(selectedSlot(tester), last.id);
+      await doubleTap(tester, find.text('Один'));
+      await settle(tester);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await settle(tester);
+      expect(find.byType(BlockCard), findsNWidgets(2));
+      expect(selectedSlot(tester), first.id);
       expect(automationStarts, 0);
       await tester.pumpWidget(const SizedBox());
     },
@@ -253,7 +307,7 @@ void main() {
       await importFiles(tester);
       expect(find.text('Заказ'), findsOneWidget);
       expect(controller.files.single.originalBlockCount, 1);
-      await tester.tap(find.text('Заказ'));
+      await doubleTap(tester, find.text('Заказ'));
       await settle(tester);
       final body = tester.widget<Text>(
         find.byKey(const Key('fullBlockContent')),
@@ -328,7 +382,7 @@ void main() {
       final input = await file(tester, 'large.txt', source);
       await open(tester, paths: [input.path]);
       await importFiles(tester);
-      await tester.tap(find.text('Большой блок'));
+      await doubleTap(tester, find.text('Большой блок'));
       await settle(tester);
       expect(
         tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
@@ -352,7 +406,7 @@ void main() {
       expect(clipboard, source);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await settle(tester);
-      await tester.tap(find.text('Большой блок'));
+      await doubleTap(tester, find.text('Большой блок'));
       await settle(tester);
       expect(
         tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
@@ -390,6 +444,168 @@ void main() {
     await settle(tester);
     expect(find.text('Сохранить'), findsOneWidget);
   });
+
+  testWidgets(
+    'В списке импортированного файла один клик выбирает слот, двойной открывает',
+    (tester) async {
+      final input = await file(
+        tester,
+        'clicks.txt',
+        '# Первый слот\n\nПервый текст\n---\n# Второй слот\n\nВторой текст',
+      );
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      await tester.tap(find.byTooltip('Импортированные файлы'));
+      await settle(tester);
+      await tester.tap(find.text('clicks.txt'));
+      await tester.pumpAndSettle();
+      final slot = find.text('Второй слот');
+      await tester.tap(slot, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      expect(
+        tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'Второй слот'))
+            .selected,
+        isTrue,
+      );
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      expect(
+        tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'Второй слот'))
+            .selected,
+        isTrue,
+      );
+      // Another isolated click must not open an already-selected slot either.
+      await tester.tap(slot, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      await tester.tap(slot, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(slot, kind: PointerDeviceKind.mouse);
+      await settle(tester);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        '\nВторой текст',
+      );
+      expect(automationStarts, 0);
+      await tester.tap(find.byTooltip('Назад (Esc)'));
+      await settle(tester);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      expect(
+        tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'Второй слот'))
+            .selected,
+        isTrue,
+      );
+      // Reopen a different, unselected row and close it through Flutter Escape.
+      await doubleTap(tester, find.text('Первый слот'));
+      await settle(tester);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        '\nПервый текст\n',
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(tester);
+      expect(
+        tester
+            .widget<ListTile>(find.widgetWithText(ListTile, 'Первый слот'))
+            .selected,
+        isTrue,
+      );
+    },
+  );
+
+  testWidgets(
+    'Просмотр: Esc без фокуса, область мыши, модальные окна и отмена загрузки',
+    (tester) async {
+      final input = await file(
+        tester,
+        'viewer.txt',
+        '# Первый\n\nПервый текст\n---\n# Второй\n\nВторой текст',
+      );
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      final mouse = await tester.createGesture(
+        kind: PointerDeviceKind.mouse,
+        pointer: 20,
+      );
+      await mouse.addPointer(location: const Offset(-10, -10));
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(tester.getCenter(find.text('Второй')));
+      await tester.pump();
+      expect(viewerEscapeRequests.every((enabled) => !enabled), isTrue);
+      await doubleTap(tester, find.text('Второй'));
+      await settle(tester);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        '\nВторой текст',
+      );
+      expect(viewerEscapeRequests.last, isTrue);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      await mouse.moveTo(const Offset(-10, -10));
+      await tester.pump();
+      expect(viewerEscapeRequests.last, isFalse);
+      await mouse.moveTo(
+        tester.getCenter(find.byKey(const Key('fullBlockContent'))),
+      );
+      await tester.pump();
+      expect(viewerEscapeRequests.last, isTrue);
+      unawaited(
+        showDialog<void>(
+          context: tester.element(find.byType(Scaffold)),
+          builder: (_) =>
+              const AlertDialog(title: Text('Проверка модального окна')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(viewerEscapeRequests.last, isFalse);
+      BackgroundService
+          .instance
+          .onCloseViewer!(); // Ignore an already queued native event.
+      await tester.pump();
+      expect(find.byKey(const Key('fullBlockContent')), findsOneWidget);
+      Navigator.of(tester.element(find.text('Проверка модального окна'))).pop();
+      await tester.pumpAndSettle();
+      expect(viewerEscapeRequests.last, isTrue);
+      BackgroundService.instance.onCloseViewer!();
+      await settle(tester);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      expect(selectedSlot(tester), controller.blocks[1].id);
+      expect(viewerEscapeRequests.last, isFalse);
+      BackgroundService
+          .instance
+          .onCloseViewer!(); // Repeated event must not change the list.
+      await tester.pump();
+      expect(selectedSlot(tester), controller.blocks[1].id);
+      await doubleTap(tester, find.text('Первый'));
+      await settle(tester);
+      BackgroundService.instance.onNavigateSlot!(
+        1,
+      ); // Async load of the next block.
+      BackgroundService
+          .instance
+          .onCloseViewer!(); // Cancel before I/O completes.
+      await settle(tester);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(selectedSlot(tester), controller.blocks[1].id);
+      await doubleTap(tester, find.text('Второй'));
+      await settle(tester);
+      await tester.tap(find.byTooltip('Назад (Esc)'));
+      await settle(tester);
+      expect(selectedSlot(tester), controller.blocks[1].id);
+      expect(automationStarts, 0);
+      await tester.pumpWidget(const SizedBox());
+      expect(BackgroundService.instance.onCloseViewer, isNull);
+      expect(viewerEscapeRequests.last, isFalse);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
 
   testWidgets(
     'Удаление импорта подтверждается и не затрагивает другой импорт с тем же именем',
@@ -483,7 +699,7 @@ void main() {
       await open(tester, paths: [input.path]);
       await importFiles(tester);
       expect(tester.takeException(), isNull);
-      await tester.tap(find.text('Заголовок'));
+      await doubleTap(tester, find.text('Заголовок'));
       await settle(tester);
       expect(find.byKey(const Key('fullBlockContent')), findsOneWidget);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
@@ -539,8 +755,9 @@ void main() {
       expect(find.text('Результат импорта'), findsOneWidget);
       expect(find.textContaining('ошибка.txt'), findsOneWidget);
       expect(controller.files, hasLength(1));
-      await tester.tap(find.text('Понятно'));
+      await tester.pump(const Duration(seconds: 5));
       await settle(tester);
+      expect(find.text('Результат импорта'), findsNothing);
       expect(find.text('Импортирован'), findsOneWidget);
     },
   );

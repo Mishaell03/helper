@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../transient_message.dart';
 import 'text_automation.dart';
 import 'typing_speed.dart';
 
@@ -170,80 +171,91 @@ class AutomationStatusBar extends StatelessWidget {
         return const SizedBox.shrink();
       }
       final message = controller.failure ?? state.message;
-      return DecoratedBox(
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: Colors.white12)),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      controller.preparingBlock != null
-                          ? 'Подготовка текста…'
-                          : '${controller.failure != null ? 'Ошибка ввода' : state.label} · ${state.position}/${state.total}',
-                      key: const Key('automationStatus'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  if (state.phase == AutomationPhase.countdown)
-                    IconButton(
-                      tooltip: 'Отменить отсчёт',
-                      icon: const Icon(Icons.close, size: 17),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: controller.cancelCountdown,
-                    ),
-                  if (state.phase == AutomationPhase.typing)
-                    IconButton(
-                      tooltip: 'Пауза ввода',
-                      icon: const Icon(Icons.pause, size: 17),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: controller.pause,
-                    ),
-                  if (state.phase == AutomationPhase.paused)
-                    IconButton(
-                      tooltip: 'Продолжить ввод',
-                      icon: const Icon(Icons.play_arrow, size: 17),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: controller.commandPending
-                          ? null
-                          : controller.resume,
-                    ),
-                  if (state.engaged || controller.commandPending)
-                    IconButton(
-                      tooltip: 'Остановить ввод',
-                      icon: const Icon(Icons.stop, size: 17),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: controller.stop,
-                    ),
-                ],
-              ),
-              if (message.isNotEmpty)
-                InkWell(
-                  onTap: () => onMessage('$title\n\n$message'),
-                  child: Tooltip(
-                    message: message,
-                    child: Align(
-                      alignment: Alignment.centerLeft,
+      final active =
+          state.engaged ||
+          controller.commandPending ||
+          controller.preparingBlock != null;
+      return TransientMessage(
+        identity: (state.phase, message, active ? null : state.revision),
+        persistent: active,
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: Colors.white12)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
                       child: Text(
-                        message,
+                        controller.preparingBlock != null
+                            ? 'Подготовка текста…'
+                            : '${controller.failure != null ? 'Ошибка ввода' : state.label} · ${state.position}/${state.total}',
+                        key: const Key('automationStatus'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white60,
-                          fontSize: 11,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                    if (state.phase == AutomationPhase.countdown)
+                      IconButton(
+                        tooltip: 'Отменить отсчёт',
+                        icon: const Icon(Icons.close, size: 17),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: controller.cancelCountdown,
+                      ),
+                    if (state.phase == AutomationPhase.typing)
+                      IconButton(
+                        tooltip: 'Пауза ввода',
+                        icon: const Icon(Icons.pause, size: 17),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: controller.pause,
+                      ),
+                    if (state.phase == AutomationPhase.paused)
+                      IconButton(
+                        tooltip: 'Продолжить ввод',
+                        icon: const Icon(Icons.play_arrow, size: 17),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: controller.commandPending
+                            ? null
+                            : controller.resume,
+                      ),
+                    if (state.engaged || controller.commandPending)
+                      IconButton(
+                        tooltip: 'Остановить ввод',
+                        icon: const Icon(Icons.stop, size: 17),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: controller.stop,
+                      ),
+                  ],
+                ),
+                if (message.isNotEmpty)
+                  TransientMessage(
+                    identity: message,
+                    child: InkWell(
+                      onTap: () => onMessage('$title\n\n$message'),
+                      child: Tooltip(
+                        message: message,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            message,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white60,
+                              fontSize: 11,
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       );

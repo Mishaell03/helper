@@ -157,6 +157,23 @@ void main() {
   });
 
   testWidgets(
+    'Сообщения настроек исчезают через пять секунд и появляются снова',
+    (tester) async {
+      await open(tester);
+      final defaults = find.text('Восстановить настройки по умолчанию');
+      await tester.ensureVisible(defaults);
+      await tester.tap(defaults);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('hotkeyMessage')), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      expect(find.byKey(const Key('hotkeyMessage')), findsNothing);
+      await tester.tap(defaults);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('hotkeyMessage')), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'Новая клавиша старта сохраняется, не меняя существующие назначения',
     (tester) async {
       toggle = const Hotkey(3, 0x78);

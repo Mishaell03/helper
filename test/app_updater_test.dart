@@ -204,6 +204,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(updater.checks, 1);
     expect(find.textContaining('Установлена последняя версия'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.textContaining('Установлена последняя версия'), findsNothing);
     updater.updateAvailable = true;
     await tester.tap(find.text('Проверить обновления'));
     await tester.pumpAndSettle();

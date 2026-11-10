@@ -12,15 +12,23 @@ void main() {
     () async {
       final service = BackgroundService.instance;
       final directions = <int>[];
+      var closes = 0;
       service.onNavigateSlot = directions.add;
-      addTearDown(() => service.onNavigateSlot = null);
+      service.onCloseViewer = () => closes++;
+      addTearDown(() {
+        service.onNavigateSlot = null;
+        service.onCloseViewer = null;
+      });
 
-      Future<void> send(Object? direction) async {
+      Future<void> send(
+        Object? direction, {
+        String method = 'navigateSlot',
+      }) async {
         final reply = Completer<void>();
         binding.channelBuffers.push(
           'helper/background',
           const StandardMethodCodec().encodeMethodCall(
-            MethodCall('navigateSlot', direction),
+            MethodCall(method, direction),
           ),
           (_) => reply.complete(),
         );
@@ -31,6 +39,11 @@ void main() {
         await send(direction);
       }
       expect(directions, [-1, 1]);
+      await send(null, method: 'closeViewer');
+      expect(closes, 1);
+      service.onCloseViewer = null;
+      await send(null, method: 'closeViewer');
+      expect(closes, 1);
       service.onNavigateSlot = null;
       await send(1);
       expect(directions, [-1, 1]);

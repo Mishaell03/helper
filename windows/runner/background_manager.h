@@ -54,6 +54,9 @@ class BackgroundManager {
   void DisableSlotNavigation();
   void ReleaseSlotNavigation();
   void RegisterSlotToggle();
+  void UpdateViewerEscape();
+  void ReleaseViewerEscape();
+  bool ViewerEscapeAllowed() const;
   bool ReadShortcut(const Value& value, Shortcut* shortcut);
   bool Valid(const Shortcut& shortcut) const;
   Value State() const;
@@ -93,6 +96,8 @@ class BackgroundManager {
   SlotNavigationPolicy slot_navigation_;
   bool slot_arrows_registered_ = false;
   bool slot_toggle_registered_ = false;
+  bool viewer_escape_requested_ = false;
+  bool viewer_escape_registered_ = false;
   std::array<std::string, 2> slot_warnings_{};
   std::string startup_error_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;

@@ -1,7 +1,9 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'support/double_tap.dart';
 import 'package:helper/automation/text_automation.dart';
 import 'package:helper/main.dart';
 import 'package:helper/markdown/markdown_controller.dart';
@@ -115,10 +117,31 @@ void main() {
   );
 
   testWidgets(
+    'Итог ввода исчезает, но активные кнопки стопа и продолжения остаются',
+    (tester) async {
+      await open(tester);
+      backend.emit(AutomationPhase.completed, position: 10);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('automationStatus')), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      expect(find.byKey(const Key('automationStatus')), findsNothing);
+      backend.emit(AutomationPhase.typing, position: 3);
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 6));
+      expect(find.byTooltip('Остановить ввод'), findsOneWidget);
+      backend.emit(AutomationPhase.paused, position: 3);
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 6));
+      expect(find.byTooltip('Продолжить ввод'), findsOneWidget);
+      expect(automation.state.phase, AutomationPhase.paused);
+    },
+  );
+
+  testWidgets(
     'Профили скорости и ползунок сохраняют реальные параметры SQLite',
     (tester) async {
       await open(tester);
-      await tester.tap(find.text('Тестовый блок'));
+      await doubleTap(tester, find.text('Тестовый блок'));
       await settle(tester);
       final slider = tester.widget<Slider>(find.byType(Slider));
       final selection = find.byType(SelectionArea);
@@ -162,6 +185,28 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Возврат из просмотра не отправляет команды управления автовводом',
+    (tester) async {
+      await open(tester);
+      await doubleTap(tester, find.text('Тестовый блок'));
+      await settle(tester);
+      backend.emit(AutomationPhase.typing, position: 3);
+      await tester.pumpAndSettle();
+      final commands = backend.calls.length;
+      await tester.tap(find.byTooltip('Назад (Esc)'));
+      await settle(tester);
+      expect(automation.state.phase, AutomationPhase.typing);
+      expect(backend.calls.length, commands);
+      await doubleTap(tester, find.text('Тестовый блок'));
+      await settle(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(tester);
+      expect(automation.state.phase, AutomationPhase.typing);
+      expect(backend.calls.length, commands);
+    },
+  );
+
   testWidgets('Защита от удаления действующего блока и всегда доступный стоп', (
     tester,
   ) async {
@@ -199,7 +244,7 @@ void main() {
       await settle(tester);
       backend.emit(AutomationPhase.typing, position: 4);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Тестовый блок'));
+      await doubleTap(tester, find.text('Тестовый блок'));
       await settle(tester);
       expect(find.byTooltip('Остановить ввод'), findsOneWidget);
       await tester.tap(find.byTooltip('Назад (Esc)'));

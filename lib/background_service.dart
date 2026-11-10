@@ -201,6 +201,8 @@ class BackgroundService {
         if (delta is int && (delta == -1 || delta == 1)) {
           onNavigateSlot?.call(delta);
         }
+      } else if (call.method == 'closeViewer') {
+        onCloseViewer?.call();
       }
     });
   }
@@ -210,6 +212,7 @@ class BackgroundService {
   void Function(Hotkey)? onRecorded;
   void Function(String)? onWarning;
   void Function(int)? onNavigateSlot;
+  void Function()? onCloseViewer;
 
   Future<BackgroundSettings> getSettings() async => BackgroundSettings.fromMap(
     (await _channel.invokeMapMethod<Object?, Object?>('getSettings'))!,
@@ -246,6 +249,8 @@ class BackgroundService {
 
   Future<void> setRecording(bool enabled) =>
       _channel.invokeMethod<void>('setRecording', enabled);
+  Future<void> setViewerEscapeEnabled(bool enabled) =>
+      _channel.invokeMethod<void>('setViewerEscapeEnabled', enabled);
   Future<BackgroundSettings> prepareWindow() async =>
       BackgroundSettings.fromMap(
         (await _channel.invokeMapMethod<Object?, Object?>('prepareWindow'))!,
