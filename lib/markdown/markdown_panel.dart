@@ -20,7 +20,7 @@ import 'markdown_repository.dart';
 import 'models.dart';
 import 'block_display.dart';
 
-enum _View { blocks, pinned, settings }
+enum _View { blocks, pinned, archive, settings }
 
 enum _SettingsTab { files, hotkeys, preferences }
 
@@ -59,13 +59,17 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   bool _opening = false;
   int _openGeneration = 0;
   bool _installingUpdate = false;
+  bool _resettingData = false;
+  int _preferencesRevision = 0;
   String? _loadError;
   Timer? _notificationTimer;
   bool _pointerInside = false;
   bool? _viewerEscapeEnabled;
+  (bool, bool)? _autoHideContext;
   static const _cardExtent = BlockCard.extent;
 
   List<BlockSummary> get _blocks => (_controller?.blocks ?? [])
+      .where((block) => block.archived == (_view == _View.archive))
       .where((block) => _view != _View.pinned || block.pinned)
       .toList();
   bool get _busy =>
@@ -73,6 +77,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       _picking ||
       _opening ||
       _installingUpdate ||
+      _resettingData ||
       (_controller?.busy ?? false);
 
   @override
@@ -112,6 +117,29 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     );
   }
 
+  void _helperActivity() {
+    if (!isWindows) return;
+    unawaited(
+      BackgroundService.instance.helperActivity().catchError((Object error) {
+        if (mounted) _notify(backgroundError(error));
+      }),
+    );
+  }
+
+  void _syncAutoHideContext() {
+    if (!isWindows) return;
+    final next = (_opened != null, _busy);
+    if (_autoHideContext == next) return;
+    _autoHideContext = next;
+    unawaited(
+      BackgroundService.instance
+          .setAutoHideContext(viewer: next.$1, suspended: next.$2)
+          .catchError((Object error) {
+            if (mounted) _notify(backgroundError(error));
+          }),
+    );
+  }
+
   void _closeViewer() {
     if (!mounted ||
         _opened == null ||
@@ -147,6 +175,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             widget.automation ??
             TextAutomationController(controller.repository);
         _automation!.onStartRequested = () => _startSelected(fromHotkey: true);
+        _automation!.onArchived = controller.load;
+        _automation!.onArchiveError = _notify;
         _automation!.addListener(_automationChanged);
         await _automation!.initialize();
       }
@@ -179,6 +209,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   Future<void> _exitApplication() => _run(() async {
     await _automation?.stop();
+    await _automation?.flushArchive();
     await _automation?.flushPreferences();
     await BackgroundService.instance.exit();
   });
@@ -220,6 +251,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         );
       }
       await _automation?.flushPreferences();
+      await _automation?.flushArchive();
       await launch();
       await BackgroundService.instance.exit();
     } finally {
@@ -237,12 +269,14 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     if (!mounted) return;
     final blocks = _blocks;
     setState(() {
-      if (!blocks.any((block) => block.id == _selected)) {
-        _selected = blocks.isEmpty ? null : blocks.first.id;
-      }
       if (_opened != null &&
           !_controller!.blocks.any((block) => block.id == _opened!.id)) {
         _opened = null;
+      }
+      if (_opened == null &&
+          !_opening &&
+          !blocks.any((block) => block.id == _selected)) {
+        _updateSelection(blocks.firstOrNull, notify: !_loading);
       }
     });
     _syncViewerEscape();
@@ -306,6 +340,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   void _navigate(_View view, {_SettingsTab? tab}) {
+    _helperActivity();
     ++_openGeneration;
     setState(() {
       _opening = false;
@@ -402,10 +437,11 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   Future<void> _open(BlockSummary block, {bool requestFocus = true}) async {
+    _helperActivity();
     if (_busy || _controller == null) return;
     final generation = ++_openGeneration;
     setState(() {
-      _selected = block.id;
+      _updateSelection(block);
       _opening = true;
     });
     _reportBlockStage(1, block.id);
@@ -454,6 +490,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     });
     if (mounted && generation == _openGeneration) {
       setState(() => _opening = false);
+      _changed();
     }
   }
 
@@ -480,6 +517,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       });
 
   void _back() {
+    _helperActivity();
     ++_openGeneration;
     if (_opened != null || _opening) {
       setState(() {
@@ -487,7 +525,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         _opened = null;
         _display = null;
       });
-      _syncViewerEscape();
+      _changed();
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _ensureSelectionVisible(),
       );
@@ -536,11 +574,15 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   BlockSummary? _selectRelative(int delta) {
+    _helperActivity();
     final blocks = _blocks;
     if (blocks.isEmpty) return null;
     final index = blocks.indexWhere((block) => block.id == _selected);
-    final next = blocks[(index + delta).clamp(0, blocks.length - 1)];
-    setState(() => _selected = next.id);
+    final next =
+        blocks[index < 0
+            ? (delta < 0 ? blocks.length - 1 : 0)
+            : (index + delta) % blocks.length];
+    setState(() => _updateSelection(next));
     return next;
   }
 
@@ -597,25 +639,89 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   Future<void> _clear({bool all = false}) async {
     if (_busy || _controller == null) return;
     if (_guardDelete(
-      _controller!.blocks.where((block) => all || !block.pinned),
+      _controller!.blocks.where(
+        (block) => all || (!block.pinned && !block.archived),
+      ),
     )) {
       return;
     }
     if (!await _confirm(
       all ? 'Удалить всё содержимое?' : 'Очистить незакреплённое?',
       all
-          ? 'Все импортированные файлы и блоки, включая закреплённые, будут удалены. Это действие нельзя отменить.'
-          : 'Незакреплённые блоки будут удалены. Закреплённые блоки и их исходные файлы останутся.',
+          ? 'Все импортированные файлы и блоки, включая закреплённые и архивные, будут удалены. Это действие нельзя отменить.'
+          : 'Незакреплённые блоки вне архива будут удалены. Закреплённые и архивные блоки и их исходные файлы останутся.',
     )) {
       return;
     }
     if (!mounted) return;
     if (_guardDelete(
-      _controller!.blocks.where((block) => all || !block.pinned),
+      _controller!.blocks.where(
+        (block) => all || (!block.pinned && !block.archived),
+      ),
     )) {
       return;
     }
     await _run(all ? _controller!.clearEverything : _controller!.clearUnpinned);
+  }
+
+  Future<void> _resetApplicationData() async {
+    if (_busy || _controller == null) return;
+    if (!await _confirm(
+      'Удалить все данные приложения?',
+      'Все импортированные файлы и блоки, включая закреплённые, архив и отметки ввода, будут удалены. '
+          'Настройки, скорость, горячие клавиши и позиция подсказки будут сброшены, автозапуск отключён. '
+          'Исходные файлы на диске останутся. Это действие нельзя отменить.',
+    )) {
+      return;
+    }
+    if (!mounted || _busy) return;
+    setState(() => _resettingData = true);
+    await _run(() async {
+      try {
+        if (isWindows) await BackgroundService.instance.setDataResetting(true);
+        await _automation?.stop();
+        if (_automation?.state.engaged == true ||
+            _automation?.failure != null) {
+          throw FormatException(
+            _automation?.failure ??
+                'Не удалось остановить автоматический ввод.',
+          );
+        }
+        await _automation?.flushPreferences();
+        await _automation?.flushArchive();
+        if (isWindows) {
+          await BackgroundService.instance.resetApplicationSettings();
+        }
+        await _controller!.resetApplicationData();
+        await _automation?.initialize();
+        if (_automation?.failure != null) {
+          throw FormatException(_automation!.failure!);
+        }
+        if (!mounted) return;
+        setState(() {
+          ++_preferencesRevision;
+          _opened = null;
+          _display = null;
+        });
+        _notify('Данные приложения удалены. Настройки сброшены.');
+      } catch (error) {
+        final message =
+            error is PlatformException || error is MissingPluginException
+            ? backgroundError(error)
+            : markdownError(error);
+        throw FormatException(
+          'Сброс не завершён. Часть данных или настроек могла быть удалена. $message',
+        );
+      } finally {
+        try {
+          if (isWindows) {
+            await BackgroundService.instance.setDataResetting(false);
+          }
+        } finally {
+          if (mounted) setState(() => _resettingData = false);
+        }
+      }
+    });
   }
 
   Future<void> _deleteFile(ImportedFile file) async {
@@ -626,7 +732,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     }
     if (!await _confirm(
       'Удалить импортированный файл?',
-      '«${file.filename}»: будут удалены все его блоки, в том числе закреплённые. Другие импорты не изменятся. Исходный файл на диске останется.',
+      '«${file.filename}»: будут удалены все его блоки, в том числе закреплённые и архивные. Другие импорты не изменятся. Исходный файл на диске останется.',
     )) {
       return;
     }
@@ -635,6 +741,13 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   @override
   void dispose() {
+    if (isWindows) {
+      unawaited(
+        BackgroundService.instance
+            .setAutoHideContext(viewer: false, suspended: true)
+            .catchError((Object _) {}),
+      );
+    }
     _notificationTimer?.cancel();
     ++_openGeneration;
     if (isWindows) {
@@ -652,10 +765,19 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     _controller?.removeListener(_changed);
     _automation?.removeListener(_automationChanged);
     if (_automation != null) _automation!.onStartRequested = null;
+    if (_automation != null) {
+      _automation!.onArchived = null;
+      _automation!.onArchiveError = null;
+    }
     if (widget.automation == null) _automation?.dispose();
     if (widget.controller == null && _controller != null) {
       _controller!.dispose();
-      unawaited(_controller!.repository.close());
+      final repository = _controller!.repository;
+      unawaited(
+        (_automation?.flushArchive() ?? Future<void>.value()).then(
+          (_) => repository.close(),
+        ),
+      );
     }
     _focus.dispose();
     _scroll.dispose();
@@ -664,6 +786,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   @override
   Widget build(BuildContext context) {
+    _syncAutoHideContext();
     final panel = Scaffold(
       body: Focus(
         focusNode: _focus,
@@ -682,6 +805,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                 if (_loading ||
                     (_picking && !_confirmingImport) ||
                     _opening ||
+                    _resettingData ||
                     (_controller?.busy ?? false))
                   const LinearProgressIndicator(minHeight: 1),
                 Expanded(
@@ -813,7 +937,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   );
 
   Widget _toolbar() => Padding(
-    padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+    padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
     child: Row(
       children: [
         _icon(
@@ -833,6 +957,12 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           'Импортированные файлы',
           () => _navigate(_View.settings, tab: _SettingsTab.files),
           selected: _view == _View.settings && _tab == _SettingsTab.files,
+        ),
+        _icon(
+          Icons.archive_outlined,
+          'Архив',
+          () => _navigate(_View.archive),
+          selected: _view == _View.archive,
         ),
         const Spacer(),
         if (_automation != null)
@@ -878,15 +1008,25 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              Text(_view == _View.pinned ? 'Закреплённое' : 'Блоки'),
-              const Spacer(),
-              TextButton(
-                onPressed:
-                    _busy || !_controller!.blocks.any((block) => !block.pinned)
-                    ? null
-                    : () => _clear(),
-                child: const Text('Очистить'),
+              Text(
+                _view == _View.archive
+                    ? 'Архив'
+                    : _view == _View.pinned
+                    ? 'Закреплённое'
+                    : 'Блоки',
               ),
+              const Spacer(),
+              if (_view != _View.archive)
+                TextButton(
+                  onPressed:
+                      _busy ||
+                          !_controller!.blocks.any(
+                            (block) => !block.pinned && !block.archived,
+                          )
+                      ? null
+                      : () => _clear(),
+                  child: const Text('Очистить'),
+                ),
             ],
           ),
         ),
@@ -896,7 +1036,9 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Text(
-                      _view == _View.pinned
+                      _view == _View.archive
+                          ? 'Архив пуст.'
+                          : _view == _View.pinned
                           ? 'Нет закреплённых блоков.'
                           : 'Добавьте файл .md или .txt\nс помощью кнопки +.',
                       textAlign: TextAlign.center,
@@ -921,9 +1063,24 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   void _selectSlot(BlockSummary block) {
+    _helperActivity();
     if (_busy) return;
-    setState(() => _selected = block.id);
+    setState(() => _updateSelection(block));
     _focus.requestFocus();
+  }
+
+  void _updateSelection(BlockSummary? block, {bool notify = true}) {
+    if (_selected == block?.id) return;
+    _selected = block?.id;
+    if (notify && isWindows) {
+      unawaited(
+        BackgroundService.instance
+            .selectedBlockChanged(block?.id, block?.title ?? '')
+            .catchError((Object error) {
+              if (mounted) _notify(backgroundError(error));
+            }),
+      );
+    }
   }
 
   Widget _card(BlockSummary block) => BlockCard(
@@ -947,6 +1104,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           _copy(block);
         case BlockAction.pin:
           _run(() => _controller!.pin(block));
+        case BlockAction.archive:
+          _run(() => _controller!.setArchived(block.id, !block.archived));
         case BlockAction.delete:
           _deleteBlock(block);
         case BlockAction.type:
@@ -1142,7 +1301,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                         alwaysUse24HourFormat: true,
                       );
                   final blocks = _controller!.blocks.where(
-                    (block) => block.fileId == file.id,
+                    (block) => block.fileId == file.id && !block.archived,
                   );
                   return ExpansionTile(
                     key: PageStorageKey('file-${file.id}'),
@@ -1196,7 +1355,11 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         child: Column(
           children: [
             TextButton(
-              onPressed: _busy || _controller!.blocks.isEmpty
+              onPressed:
+                  _busy ||
+                      !_controller!.blocks.any(
+                        (block) => !block.pinned && !block.archived,
+                      )
                   ? null
                   : () => _clear(),
               child: const Text('Очистить незакреплённое'),
@@ -1214,45 +1377,51 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   );
 
   Widget _preferences() => ListView(
+    key: const Key('preferencesList'),
     padding: const EdgeInsets.symmetric(horizontal: 12),
     children: [
-      SwitchListTile(
-        dense: true,
-        title: const Text('Показывать описания'),
-        value: _controller!.showDescriptions,
-        onChanged: _busy
-            ? null
-            : (value) => _run(() => _controller!.setShowDescriptions(value)),
-      ),
-      if (_automation != null) TypingSpeedSettings(controller: _automation!),
-      if (isWindows) ...[
-        const HotkeySettings(
-          key: ValueKey('preferencesSection'),
-          embedded: true,
-          preferencesOnly: true,
-          scrollable: false,
+      if (_automation != null)
+        AbsorbPointer(
+          absorbing: _busy,
+          child: TypingSpeedSettings(controller: _automation!, enabled: !_busy),
         ),
+      const SizedBox(height: 12),
+      AbsorbPointer(
+        absorbing: _busy,
+        child: Column(
+          key: const Key('preferencesSwitches'),
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Показывать описания'),
+              value: _controller!.showDescriptions,
+              onChanged: _busy
+                  ? null
+                  : (value) =>
+                        _run(() => _controller!.setShowDescriptions(value)),
+            ),
+            if (isWindows)
+              HotkeySettings(
+                key: ValueKey('preferencesSection-$_preferencesRevision'),
+                embedded: true,
+                preferencesOnly: true,
+                scrollable: false,
+              ),
+          ],
+        ),
+      ),
+      if (isWindows) ...[
         UpdateSettings(enabled: !_busy, install: _installUpdate),
         TextButton.icon(
-          onPressed: _exitApplication,
+          onPressed: _busy ? null : _exitApplication,
           icon: const Icon(Icons.logout, size: 16),
           label: const Text('Выйти из приложения'),
         ),
       ],
-      const Padding(
-        padding: EdgeInsets.symmetric(vertical: 12),
-        child: Row(
-          children: [
-            Image(
-              image: AssetImage('assets/branding/logo.png'),
-              width: 48,
-              height: 48,
-              semanticLabel: 'Логотип Helper',
-            ),
-            SizedBox(width: 8),
-            Text('Helper', style: TextStyle(color: Colors.white60)),
-          ],
-        ),
+      const Divider(),
+      TextButton(
+        onPressed: _busy ? null : _resetApplicationData,
+        child: const Text('Удалить все данные приложения'),
       ),
     ],
   );

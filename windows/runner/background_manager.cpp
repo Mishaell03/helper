@@ -16,10 +16,12 @@
 
 namespace {
 constexpr wchar_t kSettingsPath[] = L"Software\\Helper\\Hotkeys";
-constexpr wchar_t kSettingsValue[] = L"BindingsV2";
-constexpr std::array<const char*, 5> kActionNames = {"toggle", "exit", "start", "pause", "stop"};
-constexpr std::array<const char*, 5> kActionLabels = {
-    "Показать / скрыть", "Выход", "Начать ввод", "Пауза / продолжение", "Остановить ввод"};
+constexpr wchar_t kSettingsValue[] = L"BindingsV3";
+constexpr std::array<const char*, 8> kActionNames = {
+    "toggle", "exit", "start", "pause", "stop", "slotToggle", "slotPrevious", "slotNext"};
+constexpr std::array<const char*, 8> kActionLabels = {
+    "Показать / скрыть", "Выход", "Начать ввод", "Пауза / продолжение", "Остановить ввод",
+    "Режим навигации по блокам", "Предыдущий блок", "Следующий блок"};
 constexpr wchar_t kWindowPath[] = L"Software\\Helper\\Window";
 constexpr wchar_t kRunPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValue[] = L"Helper.Background";
@@ -27,11 +29,12 @@ constexpr int kMinWidth = 360;
 constexpr int kMinHeight = 300;
 constexpr int kMaxWidth = 1600;
 constexpr int kMaxHeight = 1200;
-constexpr UINT kSlotModifiers = MOD_CONTROL | MOD_SHIFT;
 constexpr int kSlotToggleId = 0x4801;
 constexpr int kSlotPreviousId = 0x4802;
 constexpr int kSlotNextId = 0x4803;
 constexpr int kViewerEscapeId = 0x4804;
+constexpr UINT_PTR kAutoHideTimer = 0x4805;
+constexpr wchar_t kAutoHideValue[] = L"AutoHideV1";
 double WindowScale(HWND window) {
   const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
   return FlutterDesktopGetDpiForMonitor(monitor) / 96.0;
@@ -52,15 +55,22 @@ const std::string* MapString(const flutter::EncodableMap& map, const char* name)
 }
 }  // namespace
 
+std::array<BackgroundManager::Shortcut, BackgroundManager::kActionCount>
+BackgroundManager::DefaultShortcuts() {
+  return {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
+      {MOD_CONTROL | MOD_SHIFT, VK_F4}, {MOD_CONTROL | MOD_SHIFT, VK_F6},
+      {MOD_CONTROL | MOD_SHIFT, VK_F7}, {MOD_CONTROL | MOD_SHIFT, VK_F8},
+      {MOD_CONTROL | MOD_SHIFT, VK_F3}, {MOD_CONTROL | MOD_SHIFT, VK_LEFT},
+      {MOD_CONTROL | MOD_SHIFT, VK_RIGHT}}};
+}
+
 BackgroundManager::BackgroundManager(HWND window,
                                      flutter::BinaryMessenger* messenger,
                                      bool start_hidden)
     : window_(window), visibility_(start_hidden), start_hidden_(start_hidden) {
   ApplyStyles();
   TraceCapture("created", window_, hidden_, parking_.parked());
-  std::array<Shortcut, kActionCount> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
-      {MOD_CONTROL | MOD_SHIFT, VK_F4}, {MOD_CONTROL | MOD_SHIFT, VK_F6},
-      {MOD_CONTROL | MOD_SHIFT, VK_F7}, {MOD_CONTROL | MOD_SHIFT, VK_F8}}};
+  auto shortcuts = DefaultShortcuts();
   DWORD data[kActionCount * 2]{};
   DWORD size = sizeof(data);
   const LSTATUS read = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath,
@@ -74,18 +84,29 @@ BackgroundManager::BackgroundManager(HWND window,
   if (loaded) {
     shortcuts = saved;
   } else {
-    // Preserve the existing user's two shortcuts; never silently overwrite them
-    // when introducing the three automation actions.
-    DWORD legacy[4]{};
+    // Preserve all five V2 actions (or both V1 actions), even if a new default
+    // collides with an older user's binding. Report that collision at startup.
+    DWORD legacy[10]{};
     DWORD bytes = sizeof(legacy);
-    const LSTATUS old = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath, L"BindingsV1",
+    LSTATUS old = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath, L"BindingsV2",
         RRF_RT_REG_BINARY, nullptr, legacy, &bytes);
-    const bool legacy_valid = old == ERROR_SUCCESS && bytes == sizeof(legacy) &&
-        Valid({legacy[0], legacy[1]}) && Valid({legacy[2], legacy[3]}) &&
-        !(Shortcut{legacy[0], legacy[1]} == Shortcut{legacy[2], legacy[3]});
+    size_t count = 5;
+    if (old == ERROR_FILE_NOT_FOUND || old == ERROR_PATH_NOT_FOUND) {
+      count = 2;
+      bytes = 4 * sizeof(DWORD);
+      old = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath, L"BindingsV1",
+          RRF_RT_REG_BINARY, nullptr, legacy, &bytes);
+    }
+    bool legacy_valid = old == ERROR_SUCCESS && bytes == count * 2 * sizeof(DWORD);
+    for (size_t i = 0; legacy_valid && i < count; ++i) {
+      legacy_valid = Valid({legacy[i * 2], legacy[i * 2 + 1]});
+      for (size_t j = 0; j < i; ++j) {
+        if (Shortcut{legacy[i * 2], legacy[i * 2 + 1]} ==
+            Shortcut{legacy[j * 2], legacy[j * 2 + 1]}) legacy_valid = false;
+      }
+    }
     if (legacy_valid) {
-      shortcuts[0] = {legacy[0], legacy[1]};
-      shortcuts[1] = {legacy[2], legacy[3]};
+      for (size_t i = 0; i < count; ++i) shortcuts[i] = {legacy[i * 2], legacy[i * 2 + 1]};
     }
     if ((read != ERROR_FILE_NOT_FOUND && read != ERROR_PATH_NOT_FOUND) ||
         (old != ERROR_SUCCESS && old != ERROR_FILE_NOT_FOUND && old != ERROR_PATH_NOT_FOUND) ||
@@ -98,6 +119,7 @@ BackgroundManager::BackgroundManager(HWND window,
   // Reconfiguration below remains transactional and preserves the old pair.
   for (size_t i = 0; i < bindings_.size(); ++i) {
     bindings_[i].shortcut = shortcuts[i];
+    if (i >= 5) continue; // Navigation is registered separately, only when allowed.
     bool duplicate = false;
     for (size_t j = 0; j < i; ++j) if (shortcuts[i] == shortcuts[j]) duplicate = true;
     if (duplicate) {
@@ -117,6 +139,7 @@ BackgroundManager::BackgroundManager(HWND window,
     }
   }
   LoadAutostart();
+  LoadAutoHideSettings();
   automation_ = std::make_unique<TextAutomation>(window_, messenger,
       [this](UINT key, UINT modifiers) { return DispatchControlHotkey(key, modifiers); },
       [this]() { return bindings_[4].id != 0; },
@@ -129,10 +152,71 @@ BackgroundManager::BackgroundManager(HWND window,
 
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/background", &flutter::StandardMethodCodec::GetInstance());
+  slot_notification_ = std::make_unique<SlotNotification>([this](const std::string& warning) {
+    channel_->InvokeMethod("warning", std::make_unique<Value>(warning));
+  });
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const auto& method = call.method_name();
-    if (method == "getSettings") {
+    if (resetting_data_ && (method == "setAutoHideSettings" || method == "saveSettings" ||
+        method == "setAutostart" ||
+        method == "setSlotNotificationEnabled" || method == "setRecording")) {
+      result->Error("storage_error", "Дождитесь завершения удаления данных приложения.");
+      return;
+    }
+    if (method == "helperActivity") {
+      SyncAutoHide(true);
+      result->Success();
+    } else if (method == "setAutoHideContext") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      if (!args) {
+        result->Error("invalid_argument", "Не указано состояние автоскрытия.");
+        return;
+      }
+      const auto viewer = args->find(Value("viewer"));
+      const auto suspended = args->find(Value("suspended"));
+      if (viewer == args->end() || suspended == args->end() ||
+          !std::get_if<bool>(&viewer->second) || !std::get_if<bool>(&suspended->second)) {
+        result->Error("invalid_argument", "Некорректное состояние автоскрытия.");
+        return;
+      }
+      auto_hide_viewer_ = std::get<bool>(viewer->second);
+      auto_hide_flutter_suspended_ = std::get<bool>(suspended->second);
+      SyncAutoHide();
+      result->Success();
+    } else if (method == "setAutoHideModalOpen" || method == "setAutoHidePointerHeld") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      if (!enabled) {
+        result->Error("invalid_argument", "Ожидается состояние взаимодействия с Helper.");
+        return;
+      }
+      if (method == "setAutoHideModalOpen") auto_hide_modal_ = *enabled;
+      else auto_hide_pointer_held_ = *enabled;
+      SyncAutoHide();
+      result->Success();
+    } else if (method == "setAutoHideSettings") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      std::string error;
+      if (!args) result->Error("invalid_argument", "Не указаны настройки автоскрытия.");
+      else if (!SaveAutoHideSettings(*args, &error)) result->Error("storage_error", error);
+      else result->Success(State());
+    } else if (method == "getSettings") {
       result->Success(State());
+    } else if (method == "selectedBlockChanged") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      if (!args) {
+        result->Error("invalid_argument", "Не указан выбранный блок.");
+        return;
+      }
+      const auto* name = MapString(*args, "name");
+      slot_notification_->SelectionChanged(MapInteger(*args, "id"),
+          name ? Utf16FromUtf8(*name) : std::wstring{}, SlotWindowVisible());
+      result->Success();
+    } else if (method == "setSlotNotificationEnabled") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      std::string error;
+      if (!enabled) result->Error("invalid_argument", "Ожидается настройка подсказки блока.");
+      else if (!slot_notification_->SetEnabled(*enabled, &error)) result->Error("storage_error", error);
+      else result->Success(State());
     } else if (method == "heartbeat") {
       if (watchdog_) watchdog_->DartPulse();
       result->Success();
@@ -203,12 +287,12 @@ BackgroundManager::BackgroundManager(HWND window,
       for (size_t i = 2; i < shortcuts.size(); ++i) {
         const auto found = map->find(Value(kActionNames[i]));
         if (found != map->end() && !ReadShortcut(found->second, &shortcuts[i])) {
-          result->Error("invalid_hotkey", "Некорректное сочетание клавиш автоматического ввода.");
+          result->Error("invalid_hotkey", "Некорректное сочетание клавиш.");
           return;
         }
       }
       std::string error;
-      // Configurable existing actions take priority over the new fixed keys.
+      // Release conditional navigation keys while validating the entire new set.
       ReleaseSlotNavigation();
       if (slot_toggle_registered_) UnregisterHotKey(window_, kSlotToggleId);
       slot_toggle_registered_ = false;
@@ -221,6 +305,25 @@ BackgroundManager::BackgroundManager(HWND window,
         startup_error_.clear();
         result->Success(State());
       }
+    } else if (method == "setDataResetting") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      if (!enabled) {
+        result->Error("invalid_argument", "Ожидается состояние удаления данных.");
+        return;
+      }
+      resetting_data_ = *enabled;
+      SyncAutoHide();
+      if (resetting_data_) {
+        automation_->Stop();
+        slot_notification_->Dismiss();
+      }
+      UpdateSlotNavigation();
+      result->Success();
+    } else if (method == "resetApplicationSettings") {
+      std::string error;
+      if (!resetting_data_) result->Error("storage_error", "Удаление данных не подготовлено.");
+      else if (!ResetApplicationSettings(&error)) result->Error("storage_error", error);
+      else result->Success();
     } else if (method == "setRecording") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
       if (!enabled) {
@@ -233,6 +336,7 @@ BackgroundManager::BackgroundManager(HWND window,
         return;
       }
       recording_ = *enabled;
+      SyncAutoHide();
       UpdateSlotNavigation();
       UpdateViewerEscape();
       result->Success();
@@ -298,6 +402,8 @@ BackgroundManager::BackgroundManager(HWND window,
 }
 
 BackgroundManager::~BackgroundManager() {
+  KillTimer(window_, kAutoHideTimer);
+  slot_notification_.reset();
   if (update_process_) CloseHandle(update_process_); // Do not kill committed updater.
   watchdog_.reset();
   task_view_guard_.reset();
@@ -357,9 +463,20 @@ bool BackgroundManager::DispatchControlHotkey(UINT key, UINT modifiers) const {
       return true;
     }
   }
-  if (slot_toggle_registered_ && key == VK_F3 && modifiers == kSlotModifiers) {
+  if (slot_toggle_registered_ && key == bindings_[5].shortcut.key &&
+      modifiers == bindings_[5].shortcut.modifiers) {
     PostMessage(window_, WM_HOTKEY, kSlotToggleId, MAKELPARAM(modifiers, key));
     return true;
+  }
+  if (slot_arrows_registered_) {
+    for (size_t i = 6; i < 8; ++i) {
+      const auto& shortcut = bindings_[i].shortcut;
+      if (key == shortcut.key && modifiers == shortcut.modifiers) {
+        PostMessage(window_, WM_HOTKEY, i == 6 ? kSlotPreviousId : kSlotNextId,
+                    MAKELPARAM(modifiers, key));
+        return true;
+      }
+    }
   }
   if (viewer_escape_registered_ && key == VK_ESCAPE && modifiers == 0) {
     PostMessage(window_, WM_HOTKEY, kViewerEscapeId, MAKELPARAM(0, VK_ESCAPE));
@@ -417,11 +534,13 @@ void BackgroundManager::DisableSlotNavigation() {
 
 void BackgroundManager::RegisterSlotToggle() {
   if (slot_toggle_registered_) return;
-  const bool configured = std::any_of(bindings_.begin(), bindings_.end(),
-      [](const Binding& b) { return b.shortcut == Shortcut{kSlotModifiers, VK_F3}; });
+  const auto shortcut = bindings_[5].shortcut;
+  const bool configured = std::any_of(bindings_.begin(), bindings_.begin() + 5,
+      [shortcut](const Binding& b) { return b.shortcut == shortcut; }) ||
+      shortcut == bindings_[6].shortcut || shortcut == bindings_[7].shortcut;
   if (configured || !RegisterHotKey(window_, kSlotToggleId,
-                                  kSlotModifiers | MOD_NOREPEAT, VK_F3)) {
-    slot_warnings_[0] = "Ctrl + Shift + F3 недоступно для переключения слотов: сочетание занято. ";
+                                   shortcut.modifiers | MOD_NOREPEAT, shortcut.key)) {
+    slot_warnings_[0] = "Сочетание режима навигации по блокам занято. Измените его в настройках клавиатуры. ";
     channel_->InvokeMethod("warning", std::make_unique<Value>(slot_warnings_[0]));
     return;
   }
@@ -433,21 +552,23 @@ void BackgroundManager::UpdateSlotNavigation() {
   const bool inserting = automation_ && automation_->blocks_slot_navigation();
   if (inserting) slot_navigation_.Disable();
   const bool enabled = slot_navigation_.enabled(SlotWindowVisible(), inserting) &&
-      !recording_ && !import_dialog_;
+      !recording_ && !resetting_data_ && !import_dialog_;
   if (!enabled) {
     ReleaseSlotNavigation();
     return;
   }
   if (slot_arrows_registered_) return;
-  const bool configured = std::any_of(bindings_.begin(), bindings_.end(),
-      [](const Binding& b) {
-        return b.shortcut == Shortcut{kSlotModifiers, VK_LEFT} ||
-            b.shortcut == Shortcut{kSlotModifiers, VK_RIGHT};
-      });
+  const auto previous = bindings_[6].shortcut;
+  const auto next = bindings_[7].shortcut;
+  const bool configured = previous == next ||
+      std::any_of(bindings_.begin(), bindings_.begin() + 6,
+          [previous, next](const Binding& b) {
+            return b.shortcut == previous || b.shortcut == next;
+          });
   if (!configured && RegisterHotKey(window_, kSlotPreviousId,
-                                   kSlotModifiers | MOD_NOREPEAT, VK_LEFT)) {
+                                    previous.modifiers | MOD_NOREPEAT, previous.key)) {
     if (RegisterHotKey(window_, kSlotNextId,
-                       kSlotModifiers | MOD_NOREPEAT, VK_RIGHT)) {
+                        next.modifiers | MOD_NOREPEAT, next.key)) {
       slot_arrows_registered_ = true;
       slot_warnings_[1].clear();
       return;
@@ -456,8 +577,8 @@ void BackgroundManager::UpdateSlotNavigation() {
     UnregisterHotKey(window_, kSlotPreviousId);
   }
   slot_navigation_.Disable();
-  slot_warnings_[1] = "Навигация по слотам отключена: Ctrl + Shift + стрелки заняты. "
-      "Освободите сочетания и повторите F3 или показ окна. ";
+  slot_warnings_[1] = "Навигация по слотам отключена: сочетания предыдущего/следующего блока заняты. "
+      "Измените их в настройках клавиатуры и включите режим навигации заново. ";
   channel_->InvokeMethod("warning", std::make_unique<Value>(slot_warnings_[1]));
 }
 
@@ -520,6 +641,13 @@ bool BackgroundManager::Apply(const std::array<Shortcut, kActionCount>& shortcut
     if (old.id && std::none_of(next.begin(), next.end(), [&old](const Binding& b) { return b.id == old.id; }))
       UnregisterHotKey(window_, old.id);
   }
+  // Navigation reservations above only validate availability transactionally.
+  // Restore them through their fixed IDs according to visibility/mode, never
+  // reserve previous/next globally while navigation is disabled.
+  for (size_t i = 5; i < next.size(); ++i) {
+    UnregisterHotKey(window_, next[i].id);
+    next[i].id = 0;
+  }
   bindings_ = next;
   return true;
 }
@@ -529,13 +657,124 @@ BackgroundManager::Value BackgroundManager::State() const {
     return Value(Map{{Value("modifiers"), Value(static_cast<int32_t>(shortcut.modifiers))},
                      {Value("key"), Value(static_cast<int32_t>(shortcut.key))}});
   };
-  Map state{{Value("active"), Value(std::all_of(bindings_.begin(), bindings_.end(),
+  Map state{{Value("active"), Value(std::all_of(bindings_.begin(), bindings_.begin() + 5,
                      [](const Binding& b) { return b.id != 0; }))},
-                   {Value("autostart"), Value(autostart_)},
+                    {Value("normalAutoHide"), Value(Map{
+                        {Value("enabled"), Value(auto_hide_.normal.enabled)},
+                        {Value("seconds"), Value(static_cast<int32_t>(auto_hide_.normal.seconds))}})},
+                    {Value("viewerAutoHide"), Value(Map{
+                        {Value("enabled"), Value(auto_hide_.viewer.enabled)},
+                        {Value("seconds"), Value(static_cast<int32_t>(auto_hide_.viewer.seconds))}})},
+                    {Value("autostart"), Value(autostart_)},
                    {Value("startHidden"), Value(start_hidden_)},
-                   {Value("warning"), Value(startup_error_ + slot_warnings_[0] + slot_warnings_[1])}};
+                   {Value("slotNotificationEnabled"), Value(slot_notification_->enabled())},
+                   {Value("warning"), Value(startup_error_ + slot_warnings_[0] + slot_warnings_[1] + slot_notification_->warning())}};
   for (size_t i = 0; i < bindings_.size(); ++i) state[Value(kActionNames[i])] = encode(bindings_[i].shortcut);
   return Value(state);
+}
+
+void BackgroundManager::LoadAutoHideSettings() {
+  DWORD values[5]{};
+  DWORD size = sizeof(values);
+  const LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, kWindowPath, kAutoHideValue,
+      RRF_RT_REG_BINARY, nullptr, values, &size);
+  if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) return;
+  if (status == ERROR_SUCCESS && size == sizeof(values) && values[0] == 1) {
+    const bool normal_valid = values[1] <= 1 && ValidAutoHideSeconds(values[2]);
+    const bool viewer_valid = values[3] <= 1 && ValidAutoHideSeconds(values[4]);
+    auto_hide_.Configure(GetTickCount64(),
+        normal_valid ? AutoHideOption{values[1] != 0, values[2]} : AutoHideOption{},
+        viewer_valid ? AutoHideOption{values[3] != 0, values[4]} : AutoHideOption{true, 30});
+    if (normal_valid && viewer_valid) return;
+  }
+  startup_error_ += "Не удалось прочитать автоскрытие. Некорректные настройки заменены значениями по умолчанию. ";
+}
+
+bool BackgroundManager::SaveAutoHideSettings(const Map& args, std::string* error) {
+  auto read = [&](const char* name, AutoHideOption* option) {
+    const auto found = args.find(Value(name));
+    const auto* map = found == args.end() ? nullptr : std::get_if<Map>(&found->second);
+    if (!map) return false;
+    const auto enabled = map->find(Value("enabled"));
+    const auto* flag = enabled == map->end() ? nullptr : std::get_if<bool>(&enabled->second);
+    const auto seconds = MapInteger(*map, "seconds");
+    if (!flag || seconds < 10 || seconds > 60 ||
+        !ValidAutoHideSeconds(static_cast<uint32_t>(seconds))) return false;
+    *option = {*flag, static_cast<uint32_t>(seconds)};
+    return true;
+  };
+  AutoHideOption normal, viewer;
+  if (!read("normalAutoHide", &normal) || !read("viewerAutoHide", &viewer)) {
+    *error = "Выберите время автоскрытия от 10 до 60 секунд с шагом 5 секунд.";
+    return false;
+  }
+  const DWORD values[] = {1, normal.enabled ? 1u : 0u, normal.seconds,
+                            viewer.enabled ? 1u : 0u, viewer.seconds};
+  HKEY key = nullptr;
+  LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, kWindowPath, 0, nullptr,
+      0, KEY_SET_VALUE, nullptr, &key, nullptr);
+  if (status == ERROR_SUCCESS) {
+    status = RegSetValueExW(key, kAutoHideValue, 0, REG_BINARY,
+        reinterpret_cast<const BYTE*>(values), sizeof(values));
+    RegCloseKey(key);
+  }
+  if (status != ERROR_SUCCESS) {
+    *error = WinError("Не удалось сохранить автоскрытие", status);
+    return false;
+  }
+  auto_hide_.Configure(GetTickCount64(), normal, viewer);
+  SyncAutoHide();
+  return true;
+}
+
+void BackgroundManager::SyncAutoHide(bool activity) {
+  const auto now = GetTickCount64();
+  auto_hide_.Context(now, SlotWindowVisible(), auto_hide_viewer_,
+      auto_hide_flutter_suspended_ || auto_hide_modal_ || auto_hide_pointer_held_ ||
+      recording_ || resetting_data_ || in_move_size_loop_ || import_dialog_.Get() != nullptr);
+  if (activity) auto_hide_.Activity(now);
+  ArmAutoHide();
+}
+
+void BackgroundManager::ArmAutoHide() {
+  KillTimer(window_, kAutoHideTimer);
+  const auto now = GetTickCount64();
+  const UINT remaining = auto_hide_.Remaining(now);
+  if (!remaining && !auto_hide_.expired(now)) return;
+  const UINT interval = (std::max)(remaining, static_cast<UINT>(USER_TIMER_MINIMUM));
+  if (!SetTimer(window_, kAutoHideTimer, interval, nullptr)) {
+    const std::string warning = "Не удалось запустить таймер автоскрытия Helper.";
+    std::cerr << warning << std::endl;
+    channel_->InvokeMethod("warning", std::make_unique<Value>(warning));
+  }
+}
+
+bool BackgroundManager::ResetApplicationSettings(std::string* error) {
+  ReleaseSlotNavigation();
+  if (slot_toggle_registered_) UnregisterHotKey(window_, kSlotToggleId);
+  slot_toggle_registered_ = false;
+  const bool applied = Apply(DefaultShortcuts(), false, error);
+  RegisterSlotToggle();
+  if (!applied || !SetAutostart(false, error)) return false;
+  // Delete only Helper-owned settings; never touch the user's other Run values.
+  for (const auto* path : {kSettingsPath, kWindowPath}) {
+    const LSTATUS status = RegDeleteTreeW(HKEY_CURRENT_USER, path);
+    if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND) {
+      *error = WinError("Не удалось полностью удалить настройки приложения", status);
+      return false;
+    }
+  }
+  slot_notification_.reset();
+  slot_notification_ = std::make_unique<SlotNotification>([this](const std::string& warning) {
+    channel_->InvokeMethod("warning", std::make_unique<Value>(warning));
+  });
+  start_hidden_ = false;
+  startup_error_.clear();
+  slot_warnings_[1].clear();
+  auto_hide_.Configure(GetTickCount64(), AutoHideOption{}, AutoHideOption{true, 30});
+  SyncAutoHide();
+  RestoreSize();
+  return true;
 }
 
 bool BackgroundManager::ApplyStyles() {
@@ -645,6 +884,7 @@ bool BackgroundManager::PreparePresentation() {
 }
 
 void BackgroundManager::HideForTaskView() {
+  slot_notification_->Dismiss();
   TraceCapture("task_view.hide", window_, hidden_, parking_.parked());
   automation_->Pause("Открыт обзор задач Windows. Ввод приостановлен, позиция сохранена.");
   // Keep the keyboard hook short: no registry writes before the shell snapshot.
@@ -652,6 +892,8 @@ void BackgroundManager::HideForTaskView() {
 }
 
 void BackgroundManager::Hide(bool persist_size) {
+  auto_hide_.Context(GetTickCount64(), false, auto_hide_viewer_, true);
+  KillTimer(window_, kAutoHideTimer);
   if (watchdog_) watchdog_->SetVisible(false);
   TraceCapture("hide.begin", window_, hidden_, parking_.parked());
   visibility_.Hide();
@@ -711,6 +953,7 @@ bool BackgroundManager::ShowWindowSafely() {
     startup_error_ = "Интерфейс ещё не отвечает. Панель остаётся скрытой; попробуйте показать её позже.";
     return false;
   }
+  slot_notification_->Dismiss();
   visibility_.Reveal();
   if (!parking_.Restore(window_)) {
     TraceCapture("show.restore_failed", window_, hidden_, parking_.parked(), GetLastError());
@@ -724,6 +967,7 @@ bool BackgroundManager::ShowWindowSafely() {
   }
   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
   if (hidden_) return false;
+  SyncAutoHide(true);
   UpdateViewerEscape();
   if (watchdog_) watchdog_->SetVisible(true);
   PostMessage(window_, kRefreshHelperFrame, 0, 0);
@@ -770,11 +1014,13 @@ void BackgroundManager::PickMarkdownFiles(
   if (SUCCEEDED(status)) status = import_dialog_->SetFileTypes(ARRAYSIZE(filters), filters);
   if (SUCCEEDED(status)) status = import_dialog_->SetTitle(L"Импорт текстовых блоков");
   if (SUCCEEDED(status)) status = import_dialog_->SetOkButtonLabel(L"Импортировать");
+  SyncAutoHide();
   if (SUCCEEDED(status)) {
     CaptureDialogScope capture_scope;
     const bool was_keyboard_active = keyboard_activation_;
     if (!SetKeyboardActivation(true)) {
       import_dialog_.Reset();
+      SyncAutoHide();
       UpdateSlotNavigation();
       UpdateViewerEscape();
       result->Error("window_activation_error", "Не удалось активировать диалог импорта.");
@@ -814,6 +1060,8 @@ void BackgroundManager::PickMarkdownFiles(
     }
   }
   import_dialog_.Reset();
+  auto_hide_pointer_held_ = false; // Mouse release belongs to the native dialog.
+  SyncAutoHide();
   UpdateSlotNavigation();
   UpdateViewerEscape();
   if (!activation_restored) {
@@ -949,16 +1197,27 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     slot_navigation_.Hide();
     ReleaseSlotNavigation();
     ReleaseViewerEscape();
+    auto_hide_.Context(GetTickCount64(), false, auto_hide_viewer_, true);
+    KillTimer(window_, kAutoHideTimer);
   } else if ((message == WM_SIZE || message == WM_SHOWWINDOW) && SlotWindowVisible()) {
+    if (slot_notification_) slot_notification_->Dismiss();
     UpdateSlotNavigation();
     UpdateViewerEscape();
+    SyncAutoHide();
   }
   if (message == WM_ENTERSIZEMOVE || message == WM_EXITSIZEMOVE) {
     in_move_size_loop_ = message == WM_ENTERSIZEMOVE;
+    if (!in_move_size_loop_) auto_hide_pointer_held_ = false;
+    SyncAutoHide();
     UpdateViewerEscape();
     if (watchdog_) watchdog_->SetMoveSizeLoop(in_move_size_loop_);
     TraceCapture(in_move_size_loop_ ? "resize.begin" : "resize.end",
                  window_, hidden_, parking_.parked());
+  }
+  if (message == WM_TIMER && wparam == kAutoHideTimer) {
+    SyncAutoHide();
+    if (auto_hide_.expired(GetTickCount64())) Hide();
+    return true;
   }
   if (message == WM_TIMER && wparam == kWatchdogNativeTimer) {
     if (watchdog_) watchdog_->NativePulse();
@@ -1079,7 +1338,8 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     return true;
   }
   if (wparam == kSlotToggleId && slot_toggle_registered_ &&
-      modifiers == kSlotModifiers && key == VK_F3) {
+      modifiers == bindings_[5].shortcut.modifiers && key == bindings_[5].shortcut.key) {
+    SyncAutoHide(true);
     if (recording_ && GetForegroundWindow() == window_) {
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
           {Value("modifiers"), Value(static_cast<int32_t>(modifiers))},
@@ -1091,12 +1351,12 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     return true;
   }
   if (wparam == kSlotPreviousId || wparam == kSlotNextId) {
-    const UINT expected = wparam == kSlotPreviousId ? VK_LEFT : VK_RIGHT;
-    if (slot_arrows_registered_ && modifiers == kSlotModifiers && key == expected &&
+    const auto expected = bindings_[wparam == kSlotPreviousId ? 6 : 7].shortcut;
+    if (slot_arrows_registered_ && modifiers == expected.modifiers && key == expected.key &&
         slot_navigation_.enabled(SlotWindowVisible(), automation_->blocks_slot_navigation()) &&
         !recording_ && !import_dialog_) {
       channel_->InvokeMethod("navigateSlot", std::make_unique<Value>(
-          static_cast<int32_t>(key == VK_LEFT ? -1 : 1)));
+          static_cast<int32_t>(wparam == kSlotPreviousId ? -1 : 1)));
     }
     return true;
   }
@@ -1106,6 +1366,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     if (!b.id || wparam != static_cast<WPARAM>(b.id) ||
         modifiers != b.shortcut.modifiers || key != b.shortcut.key)
       continue;
+    SyncAutoHide(true);
     if (recording_ && GetForegroundWindow() == window_) {
       if (i == 4) automation_->Stop();
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
@@ -1116,7 +1377,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     } else if (i == 1) {
       PostMessage(window_, WM_APP + 43, 0, 0);
     } else if (i == 2) {
-      if (!import_dialog_) automation_->RequestStart();
+      if (!import_dialog_ && !resetting_data_) automation_->RequestStart();
     } else if (i == 3) {
       automation_->TogglePause();
     } else {

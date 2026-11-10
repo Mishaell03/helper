@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'block_tap_region.dart';
 import 'models.dart';
 
-enum BlockAction { copy, pin, delete, type }
+enum BlockAction { copy, pin, archive, delete, type }
 
 class BlockCard extends StatelessWidget {
   const BlockCard({
@@ -40,7 +40,9 @@ class BlockCard extends StatelessWidget {
       button: true,
       hint:
           'Клик — выбрать, двойной клик или Enter — открыть, Ctrl+C — копировать',
-      label: '${block.displayTitle}${block.pinned ? ', закреплён' : ''}',
+      label:
+          '${block.displayTitle}${block.pinned ? ', закреплён' : ''}'
+          '${block.archived ? ', в архиве' : ''}',
       child: Material(
         color: Colors.white.withValues(alpha: selected ? 0.075 : 0.035),
         shape: RoundedRectangleBorder(
@@ -124,6 +126,18 @@ class BlockCard extends StatelessWidget {
                 ),
                 Row(
                   children: [
+                    if (block.insertionCompleted)
+                      const IgnorePointer(
+                        child: Padding(
+                          padding: EdgeInsets.only(right: 6),
+                          child: Icon(
+                            Icons.check,
+                            size: 14,
+                            color: Colors.white38,
+                            semanticLabel: 'Текст введён полностью',
+                          ),
+                        ),
+                      ),
                     Expanded(
                       child: automationStatus == null
                           ? const SizedBox.shrink()
@@ -148,6 +162,27 @@ class BlockCard extends StatelessWidget {
                         padding: EdgeInsets.zero,
                         icon: const Icon(Icons.stop, size: 16),
                       ),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 28,
+                        height: 24,
+                      ),
+                      padding: EdgeInsets.zero,
+                      iconSize: 15,
+                      tooltip: block.archived
+                          ? 'Восстановить из архива'
+                          : 'В архив',
+                      onPressed: enabled
+                          ? () => onAction(BlockAction.archive)
+                          : null,
+                      icon: Icon(
+                        block.archived
+                            ? Icons.unarchive_outlined
+                            : Icons.archive_outlined,
+                        color: Colors.white60,
+                      ),
+                    ),
                     IconButton(
                       visualDensity: VisualDensity.compact,
                       constraints: const BoxConstraints.tightFor(

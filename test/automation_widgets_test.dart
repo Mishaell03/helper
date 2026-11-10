@@ -36,6 +36,7 @@ void main() {
     automation = TextAutomationController(repository, backend: backend);
   });
   tearDown(() async {
+    if (automation.archiving) await automation.flushArchive();
     automation.dispose();
     markdown.dispose();
     await repository.close();
@@ -50,6 +51,8 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 30));
       if (automation.ready &&
+          !automation.archiving &&
+          !markdown.busy &&
           !automation.savingPreferences &&
           !automation.commandPending &&
           find.byType(CircularProgressIndicator).evaluate().isEmpty &&
@@ -68,6 +71,82 @@ void main() {
     await settle(tester);
     addTearDown(() => tester.pumpWidget(const SizedBox()));
   }
+
+  testWidgets('Завершение архивирует введённый блок, а не текущий выбор', (
+    tester,
+  ) async {
+    await tester.runAsync(
+      () => repository.importDocument(
+        document('другой.md', '# Другой блок\nДругой текст'),
+      ),
+    );
+    await open(tester);
+    final otherId = markdown.blocks.firstWhere((block) => block.id != id).id;
+    final starting = automation.start(id);
+    await settle(tester);
+    await starting;
+    backend.emit(AutomationPhase.typing, position: 2);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Другой блок'));
+    await tester.pump();
+    backend.emit(
+      AutomationPhase.completed,
+      position: backend.data['total'] as int,
+    );
+    await settle(tester);
+    expect(
+      markdown.blocks.firstWhere((block) => block.id == id).archived,
+      isTrue,
+    );
+    expect(
+      markdown.blocks.firstWhere((block) => block.id == otherId).archived,
+      isFalse,
+    );
+    expect(find.text('Тестовый блок'), findsNothing);
+    await tester.tap(find.byTooltip('Архив'));
+    await settle(tester);
+    expect(find.text('Тестовый блок'), findsOneWidget);
+    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byIcon(Icons.check),
+        matching: find.byType(IgnorePointer),
+      ),
+      findsWidgets,
+    );
+    await doubleTap(tester, find.text('Тестовый блок'));
+    await settle(tester);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+      body,
+    );
+    await tester.tap(find.byTooltip('Назад (Esc)'));
+    await settle(tester);
+    await tester.tap(find.byTooltip('Восстановить из архива'));
+    await settle(tester);
+    expect(find.text('Архив пуст.'), findsOneWidget);
+    backend.emit(
+      AutomationPhase.completed,
+    ); // A later status refresh must not undo Restore.
+    await settle(tester);
+    expect(
+      markdown.blocks.firstWhere((block) => block.id == id).archived,
+      isFalse,
+    );
+    await tester.tap(find.byTooltip('Все блоки'));
+    await settle(tester);
+    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(
+      markdown.blocks.firstWhere((block) => block.id == id).insertionCompleted,
+      isTrue,
+    );
+    expect(
+      markdown.blocks
+          .firstWhere((block) => block.id == otherId)
+          .insertionCompleted,
+      isFalse,
+    );
+  });
 
   testWidgets(
     'Старт, отсчёт, отмена, пауза, продолжение и стоп внутри карточки',

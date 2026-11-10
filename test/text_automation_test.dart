@@ -25,6 +25,7 @@ void main() {
     controller = TextAutomationController(repository, backend: backend);
   });
   tearDown(() async {
+    await controller.flushArchive();
     controller.dispose();
     await repository.close();
     await directory.delete(recursive: true);
@@ -34,6 +35,160 @@ void main() {
     await repository.importDocument(document('ввод.md', '# Текст\n$body'));
     return (await repository.blocks()).first.id;
   }
+
+  test(
+    'Только подтверждённое завершение архивирует ID операции, без повторов',
+    () async {
+      final id = await source('Полный текст 😀');
+      await controller.initialize();
+      await controller.start(id);
+      final otherId = await source('Другой выбранный блок');
+      var refreshes = 0;
+      controller.onArchived = () async {
+        refreshes++;
+      };
+      backend.emit(AutomationPhase.typing, position: 2);
+      backend.emit(
+        AutomationPhase.completed,
+        position: backend.data['total'] as int,
+      );
+      await controller.flushArchive();
+      expect((await repository.block(id)).archived, isTrue);
+      expect((await repository.block(id)).insertionCompleted, isTrue);
+      expect((await repository.block(otherId)).archived, isFalse);
+      expect((await repository.block(otherId)).insertionCompleted, isFalse);
+      expect((await repository.block(id)).content, 'Полный текст 😀');
+      expect(refreshes, 1);
+      await repository.setArchived(id, false);
+      backend.emit(AutomationPhase.completed);
+      await controller.setSpeed(
+        400,
+      ); // Repeated completed snapshots are not new operations.
+      await controller.flushArchive();
+      expect((await repository.block(id)).archived, isFalse);
+      expect((await repository.block(id)).insertionCompleted, isTrue);
+      expect(refreshes, 1);
+      await controller.start(id);
+      backend.emit(
+        AutomationPhase.completed,
+        position: backend.data['total'] as int,
+      );
+      await controller.flushArchive();
+      expect((await repository.block(id)).archived, isTrue);
+      expect(refreshes, 2);
+    },
+  );
+
+  for (final phase in [
+    AutomationPhase.countdown,
+    AutomationPhase.typing,
+    AutomationPhase.paused,
+    AutomationPhase.stopped,
+    AutomationPhase.error,
+  ]) {
+    test(
+      'Состояние ${phase.name} не архивирует даже при position == total',
+      () async {
+        final id = await source('Текст');
+        await controller.initialize();
+        await controller.start(id);
+        backend.emit(phase, position: backend.data['total'] as int);
+        await controller.flushArchive();
+        expect((await repository.block(id)).archived, isFalse);
+        expect((await repository.block(id)).insertionCompleted, isFalse);
+      },
+    );
+  }
+
+  test(
+    'Неполное завершение, отмена и стоп не архивируют; старый stopToken отклоняется',
+    () async {
+      final id = await source('Неоконченный текст');
+      await controller.initialize();
+      await controller.start(id);
+      backend.emit(AutomationPhase.completed, position: 2);
+      await controller.flushArchive();
+      expect((await repository.block(id)).archived, isFalse);
+      expect((await repository.block(id)).insertionCompleted, isFalse);
+      await controller.start(id);
+      await controller.cancelCountdown();
+      await controller.flushArchive();
+      expect((await repository.block(id)).archived, isFalse);
+      await controller.start(id);
+      final oldToken = controller.state.stopToken;
+      await controller.stop();
+      backend.emit(
+        AutomationPhase.completed,
+        position: backend.data['total'] as int,
+        stopToken: oldToken,
+      );
+      await controller.flushArchive();
+      expect(controller.state.phase, AutomationPhase.stopped);
+      expect((await repository.block(id)).archived, isFalse);
+      backend.emit(
+        AutomationPhase.stopped,
+        stopToken: oldToken + 2,
+      ); // Native emergency stop.
+      await controller.flushArchive();
+      expect((await repository.block(id)).archived, isFalse);
+    },
+  );
+
+  test(
+    'Ошибка записи архива не меняет завершённый ввод и не теряет текст',
+    () async {
+      final id = await source('Сохранить исходник');
+      final connection = await databaseFactoryFfi.openDatabase(
+        '${directory.path}/test.sqlite3',
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      try {
+        await connection.execute(
+          '''CREATE TRIGGER reject_archive BEFORE UPDATE OF archived ON blocks
+        BEGIN SELECT RAISE(ABORT, 'archive test failure'); END''',
+        );
+        final errors = <String>[];
+        controller.onArchiveError = errors.add;
+        await controller.initialize();
+        await controller.start(id);
+        backend.emit(
+          AutomationPhase.completed,
+          position: backend.data['total'] as int,
+        );
+        await controller.flushArchive();
+        expect(controller.state.phase, AutomationPhase.completed);
+        expect(controller.failure, isNull);
+        expect(errors, hasLength(1));
+        expect((await repository.block(id)).archived, isFalse);
+        expect((await repository.block(id)).insertionCompleted, isFalse);
+        expect((await repository.block(id)).content, 'Сохранить исходник');
+        await connection.execute('DROP TRIGGER reject_archive');
+        await repository.setArchived(id, true);
+        expect((await repository.block(id)).archived, isTrue);
+        expect((await repository.block(id)).insertionCompleted, isFalse);
+      } finally {
+        await connection.close();
+      }
+    },
+  );
+
+  test(
+    'Подтверждённая архивация завершается после dispose контроллера',
+    () async {
+      final id = await source('Готовый текст');
+      final otherBackend = TestAutomationBackend();
+      final other = TextAutomationController(repository, backend: otherBackend);
+      await other.initialize();
+      await other.start(id);
+      otherBackend.emit(
+        AutomationPhase.completed,
+        position: otherBackend.data['total'] as int,
+      );
+      other.dispose();
+      await other.flushArchive();
+      expect((await repository.block(id)).archived, isTrue);
+    },
+  );
 
   test(
     'Скорость 1000 по умолчанию; диапазон и сохранение после повторного открытия SQLite',
@@ -112,6 +267,7 @@ void main() {
       await controller.initialize();
       await controller.start(id);
       expect(backend.receivedText, text);
+      expect((await repository.block(id)).archived, isFalse);
       expect(controller.state.phase, AutomationPhase.countdown);
       expect(controller.state.countdown, 5);
       expect(controller.protects(id), isTrue);
@@ -169,6 +325,7 @@ void main() {
       expect(controller.state.phase, AutomationPhase.stopped);
       expect(controller.preparingBlock, isNull);
       expect(controller.protects(id), isFalse);
+      expect((await repository.block(id)).archived, isFalse);
     },
   );
 
@@ -208,6 +365,7 @@ void main() {
       expect(controller.failure, 'Не зарегистрирована клавиша остановки.');
       expect(controller.state.phase, AutomationPhase.idle);
       expect((await repository.block(id)).content, 'Сохранённый текст');
+      expect((await repository.block(id)).archived, isFalse);
     },
   );
 

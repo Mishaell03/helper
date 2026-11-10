@@ -145,15 +145,24 @@ $Executable = (Resolve-Path $Executable).Path
 if (Get-Process helper -ErrorAction SilentlyContinue) {
     throw 'Exit all Helper instances before running this test.'
 }
-$saved = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV2' -ErrorAction SilentlyContinue
+$saved = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV3' -ErrorAction SilentlyContinue
+if (-not $saved) {
+    $saved = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV2' -ErrorAction SilentlyContinue
+}
 if (-not $saved) {
     $saved = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV1' -ErrorAction SilentlyContinue
 }
-if ($saved -and ([BitConverter]::ToUInt32($saved, 0) -ne 6 -or
-                 [BitConverter]::ToUInt32($saved, 4) -ne 0x7b -or
-                 [BitConverter]::ToUInt32($saved, 8) -ne 6 -or
-                 [BitConverter]::ToUInt32($saved, 12) -ne 0x73)) {
-    throw 'Restore default shortcuts in Helper before running this test.'
+if ($saved) {
+    $defaults = @(0x7b, 0x73, 0x75, 0x76, 0x77, 0x72, 0x25, 0x27)
+    if ($saved.Length -notin @(16, 40, 64)) {
+        throw 'Restore default shortcuts in Helper before running this test.'
+    }
+    for ($i = 0; $i -lt $saved.Length / 8; $i++) {
+        if ([BitConverter]::ToUInt32($saved, $i * 8) -ne 6 -or
+            [BitConverter]::ToUInt32($saved, $i * 8 + 4) -ne $defaults[$i]) {
+            throw 'Restore default shortcuts in Helper before running this test.'
+        }
+    }
 }
 
 function Wait-For([scriptblock]$Condition, [string]$Failure) {

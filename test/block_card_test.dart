@@ -13,6 +13,7 @@ void main() {
       var selections = 0;
       var openings = 0;
       var pins = 0;
+      var archives = 0;
       final block = BlockSummary.fromRow({
         'id': 1,
         'file_id': 1,
@@ -37,6 +38,7 @@ void main() {
                 onOpen: () => openings++,
                 onAction: (action) {
                   if (action == BlockAction.pin) pins++;
+                  if (action == BlockAction.archive) archives++;
                 },
               ),
             ),
@@ -80,6 +82,12 @@ void main() {
       await doubleTap(tester, find.byTooltip('Закрепить'));
       await tester.pumpAndSettle();
       expect(pins, 3);
+      expect(openings, 1);
+      final beforeArchive = selections;
+      await doubleTap(tester, find.byTooltip('В архив'));
+      await tester.pumpAndSettle();
+      expect(archives, 2);
+      expect(selections, beforeArchive);
       expect(openings, 1);
       await show(enabled: false);
       await doubleTap(tester, find.text('Слот'));

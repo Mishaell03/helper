@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/markdown/markdown_controller.dart';
 import 'package:helper/markdown/markdown_repository.dart';
+import 'package:helper/automation/typing_speed.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'support/markdown_fixture.dart';
@@ -24,6 +25,29 @@ void main() {
   });
 
   test(
+    'Сброс удаляет импорты, архив, отметки и настройки, включая после перезапуска',
+    () async {
+      await repository.importDocument(
+        document('данные.md', '# Блок\n\nСекретный текст'),
+      );
+      final id = (await repository.blocks()).single.id;
+      await repository.setPinned(id, true);
+      await repository.completeInsertion(id);
+      await repository.setShowDescriptions(false);
+      await repository.setTypingSpeed(TypingSpeed.max);
+      await repository.resetApplicationData();
+      await repository.close();
+      repository = await MarkdownRepository.open(databasePath: databasePath);
+      expect(await repository.blocks(), isEmpty);
+      expect(await repository.files(), isEmpty);
+      expect(await repository.showDescriptions(), isTrue);
+      expect(await repository.typingSpeed(), TypingSpeed.normal);
+      await repository.importDocument(document('новый.md', '# Новый\n\nТекст'));
+      expect((await repository.blocks()).single.id, 1);
+    },
+  );
+
+  test(
     'Исходники, ID, метаданные, закрепление и настройки переживают перезапуск БД',
     () async {
       const text = '\n# Заголовок\r\n### Описание\r\n\r\nТекст  \r\n\r\n';
@@ -31,6 +55,7 @@ void main() {
       final fileId = await repository.importDocument(original);
       final block = (await repository.blocks()).single;
       await repository.setPinned(block.id, true);
+      await repository.setArchived(block.id, true);
       await repository.setShowDescriptions(false);
       await repository.close();
       repository = await MarkdownRepository.open(databasePath: databasePath);
@@ -38,6 +63,11 @@ void main() {
       expect(saved.id, block.id);
       expect(saved.fileId, fileId);
       expect(saved.pinned, isTrue);
+      expect(saved.archived, isTrue);
+      expect(
+        saved.insertionCompleted,
+        isFalse,
+      ); // Manual archive is not typing.
       expect(await repository.showDescriptions(), isFalse);
       final full = await repository.block(saved.id);
       expect(full.content, '\r\nТекст  \r\n\r\n');
@@ -50,6 +80,182 @@ void main() {
       expect(file.originalBlockCount, 1);
       expect(file.remainingBlockCount, 1);
       expect(file.importedAt.isUtc, isTrue);
+    },
+  );
+
+  test(
+    'Ручной архив и восстановление сохраняют ID, закрепление и весь текст',
+    () async {
+      await repository.importDocument(
+        document('архив.md', '# Блок\n\nТочный текст 😀'),
+      );
+      final controller = MarkdownController(repository);
+      addTearDown(controller.dispose);
+      await controller.load();
+      final block = controller.blocks.single;
+      final before = await repository.block(block.id);
+      await controller.pin(block);
+      await controller.setArchived(block.id, true);
+      expect(controller.blocks.single.archived, isTrue);
+      expect(controller.blocks.single.pinned, isTrue);
+      await controller.pin(controller.blocks.single);
+      expect(controller.blocks.single.pinned, isFalse);
+      expect(controller.blocks.single.archived, isTrue);
+      await controller.pin(controller.blocks.single);
+      expect((await repository.block(block.id)).content, before.content);
+      expect((await repository.block(block.id)).source, before.source);
+      await controller.setArchived(block.id, false);
+      expect(controller.blocks.single.id, block.id);
+      expect(controller.blocks.single.archived, isFalse);
+      expect(controller.blocks.single.pinned, isTrue);
+      expect((await repository.files()).single.remainingBlockCount, 1);
+    },
+  );
+
+  test(
+    'Очистка обычных блоков сохраняет архив независимо от закрепления',
+    () async {
+      await repository.importDocument(
+        document('три.txt', '# Один\n\n1\n---\n# Два\n\n2\n---\n# Три\n\n3'),
+      );
+      final blocks = await repository.blocks();
+      await repository.setPinned(blocks[0].id, true);
+      await repository.setArchived(blocks[1].id, true);
+      await repository.clearUnpinned();
+      expect((await repository.blocks()).map((block) => block.id), [
+        blocks[0].id,
+        blocks[1].id,
+      ]);
+      expect((await repository.block(blocks[1].id)).archived, isTrue);
+    },
+  );
+
+  test('Ошибка ручной архивации оставляет блок и снимает busy', () async {
+    await repository.importDocument(document('ошибка.txt', 'Исходный текст'));
+    final controller = MarkdownController(repository);
+    final connection = await databaseFactoryFfi.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    try {
+      await controller.load();
+      final id = controller.blocks.single.id;
+      await connection.execute(
+        '''CREATE TRIGGER reject_manual_archive BEFORE UPDATE OF archived ON blocks
+        BEGIN SELECT RAISE(ABORT, 'manual archive failure'); END''',
+      );
+      await expectLater(
+        controller.setArchived(id, true),
+        throwsA(isA<DatabaseException>()),
+      );
+      expect(controller.busy, isFalse);
+      expect(controller.blocks.single.archived, isFalse);
+      expect((await repository.block(id)).content, 'Исходный текст');
+    } finally {
+      controller.dispose();
+      await connection.close();
+    }
+  });
+
+  for (final version in [1, 2]) {
+    test(
+      'База версии $version обновляется без потери данных и выдуманных отметок ввода',
+      () async {
+        final legacyPath = '${directory.path}/legacy.sqlite3';
+        final doc = document('старый.md', '# Старый\n\nСохранить');
+        final legacy = await databaseFactoryFfi.openDatabase(
+          legacyPath,
+          options: OpenDatabaseOptions(
+            version: version,
+            onCreate: (db, _) async {
+              await db.execute('''CREATE TABLE imported_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL,
+          imported_at INTEGER NOT NULL, block_count INTEGER NOT NULL,
+          original_content TEXT NOT NULL, original_bytes BLOB NOT NULL)''');
+              await db.execute(
+                '''CREATE TABLE blocks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_id INTEGER NOT NULL REFERENCES imported_files(id) ON DELETE CASCADE,
+          position INTEGER NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
+          content TEXT NOT NULL, source TEXT NOT NULL,
+          pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)), UNIQUE(file_id, position))''',
+              );
+              await db.execute('CREATE INDEX blocks_file ON blocks(file_id)');
+              if (version == 2) {
+                await db.execute(
+                  'ALTER TABLE blocks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0',
+                );
+              }
+              await db.execute(
+                'CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+              );
+              await db.insert('imported_files', {
+                'id': 7,
+                'filename': doc.filename,
+                'imported_at': 0,
+                'block_count': 1,
+                'original_content': doc.text,
+                'original_bytes': doc.bytes,
+              });
+              await db.insert('blocks', {
+                'id': 42,
+                'file_id': 7,
+                'position': 0,
+                'title': 'Старый',
+                'description': '',
+                'content': '\nСохранить',
+                'source': doc.text,
+                'pinned': 1,
+                if (version == 2) 'archived': 1,
+              });
+              await db.insert('preferences', {
+                'key': 'show_descriptions',
+                'value': 'false',
+              });
+            },
+          ),
+        );
+        await legacy.close();
+        var upgraded = await MarkdownRepository.open(databasePath: legacyPath);
+        try {
+          final block = (await upgraded.blocks()).single;
+          expect(block.id, 42);
+          expect(block.archived, version == 2);
+          expect(block.insertionCompleted, isFalse);
+          expect(block.pinned, isTrue);
+          expect(await upgraded.showDescriptions(), isFalse);
+          expect((await upgraded.originalFile(7)).bytes, doc.bytes);
+          expect((await upgraded.block(42)).source, doc.text);
+          await upgraded.setArchived(42, true);
+          await upgraded.close();
+          upgraded = await MarkdownRepository.open(databasePath: legacyPath);
+          expect((await upgraded.block(42)).archived, isTrue);
+          expect((await upgraded.block(42)).id, 42);
+        } finally {
+          await upgraded.close();
+        }
+      },
+    );
+  }
+
+  test(
+    'Отметка полного ввода сохраняется после восстановления и перезапуска',
+    () async {
+      await repository.importDocument(
+        document('ввод.txt', 'Полный исходный текст'),
+      );
+      final id = (await repository.blocks()).single.id;
+      await repository.completeInsertion(id);
+      await repository.setArchived(id, false);
+      await repository.close();
+      repository = await MarkdownRepository.open(databasePath: databasePath);
+      final saved = (await repository.blocks()).single;
+      expect(saved.id, id);
+      expect(saved.archived, isFalse);
+      expect(saved.insertionCompleted, isTrue);
+      expect((await repository.block(id)).content, 'Полный исходный текст');
+      await repository.setArchived(id, true);
+      expect((await repository.block(id)).insertionCompleted, isTrue);
     },
   );
 

@@ -41,7 +41,7 @@ class MarkdownRepository {
     final database = await databaseFactoryFfi.openDatabase(
       databasePath,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 3,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
           await db.execute('PRAGMA busy_timeout = 5000');
@@ -64,12 +64,29 @@ class MarkdownRepository {
             content TEXT NOT NULL,
             source TEXT NOT NULL,
             pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
+            archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
+            insertion_completed INTEGER NOT NULL DEFAULT 0 CHECK(insertion_completed IN (0, 1)),
             UNIQUE(file_id, position)
           )''');
           await db.execute('CREATE INDEX blocks_file ON blocks(file_id)');
           await db.execute('''CREATE TABLE preferences (
             key TEXT PRIMARY KEY, value TEXT NOT NULL
           )''');
+        },
+        onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 2) {
+            await db.execute(
+              'ALTER TABLE blocks ADD COLUMN archived INTEGER '
+              'NOT NULL DEFAULT 0 CHECK(archived IN (0, 1))',
+            );
+          }
+          if (oldVersion < 3) {
+            // Old archive flags do not distinguish manual actions from typing.
+            await db.execute(
+              'ALTER TABLE blocks ADD COLUMN insertion_completed INTEGER '
+              'NOT NULL DEFAULT 0 CHECK(insertion_completed IN (0, 1))',
+            );
+          }
         },
       ),
     );
@@ -105,7 +122,7 @@ class MarkdownRepository {
     SELECT id, file_id, position,
       CASE WHEN length(title) > 160 THEN substr(title, 1, 159) || '…' ELSE title END AS title,
       CASE WHEN length(description) > 240 THEN substr(description, 1, 239) || '…' ELSE description END AS description,
-      pinned,
+      pinned, archived, insertion_completed,
       CASE WHEN length(content) > 240 THEN substr(content, 1, 239) || '…' ELSE content END AS preview
     FROM blocks ORDER BY file_id DESC, position ASC
   ''')).map(BlockSummary.fromRow).toList();
@@ -150,6 +167,24 @@ class MarkdownRepository {
     );
   }
 
+  Future<void> setArchived(int id, bool archived) async {
+    await _database.update(
+      'blocks',
+      {'archived': archived ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> completeInsertion(int id) async {
+    await _database.update(
+      'blocks',
+      {'archived': 1, 'insertion_completed': 1},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<void> deleteBlock(int id) =>
       _database.transaction((transaction) async {
         await transaction.delete('blocks', where: 'id = ?', whereArgs: [id]);
@@ -163,13 +198,27 @@ class MarkdownRepository {
   }
 
   Future<void> clearUnpinned() => _database.transaction((transaction) async {
-    await transaction.delete('blocks', where: 'pinned = 0');
+    await transaction.delete('blocks', where: 'pinned = 0 AND archived = 0');
     await _removeEmptyImports(transaction);
   });
 
   Future<void> clearEverything() => _database.transaction((transaction) async {
     await transaction.delete('imported_files');
   });
+
+  Future<void> resetApplicationData() async {
+    await _database.execute('PRAGMA secure_delete = ON');
+    await _database.transaction((transaction) async {
+      await transaction.delete('imported_files');
+      await transaction.delete('preferences');
+      await transaction.delete(
+        'sqlite_sequence',
+        where: 'name IN (?, ?)',
+        whereArgs: ['blocks', 'imported_files'],
+      );
+    });
+    await _database.execute('VACUUM');
+  }
 
   Future<void> _removeEmptyImports(Transaction transaction) =>
       transaction.execute('''DELETE FROM imported_files WHERE NOT EXISTS

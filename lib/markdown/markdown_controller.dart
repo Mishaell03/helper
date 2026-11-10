@@ -15,12 +15,14 @@ class MarkdownController extends ChangeNotifier {
   bool showDescriptions = true;
   bool busy = false;
   bool _disposed = false;
+  int _loadGeneration = 0;
 
   Future<void> load() async {
+    final generation = ++_loadGeneration;
     final newBlocks = await repository.blocks();
     final newFiles = await repository.files();
     final descriptions = await repository.showDescriptions();
-    if (_disposed) return;
+    if (_disposed || generation != _loadGeneration) return;
     blocks = newBlocks;
     files = newFiles;
     showDescriptions = descriptions;
@@ -67,10 +69,14 @@ class MarkdownController extends ChangeNotifier {
 
   Future<void> pin(BlockSummary block) =>
       _change(() => repository.setPinned(block.id, !block.pinned));
+  Future<void> setArchived(int id, bool archived) =>
+      _change(() => repository.setArchived(id, archived));
   Future<void> deleteBlock(int id) => _change(() => repository.deleteBlock(id));
   Future<void> deleteFile(int id) => _change(() => repository.deleteFile(id));
   Future<void> clearUnpinned() => _change(repository.clearUnpinned);
   Future<void> clearEverything() => _change(repository.clearEverything);
+  Future<void> resetApplicationData() =>
+      _change(repository.resetApplicationData);
   Future<void> setShowDescriptions(bool enabled) =>
       _change(() => repository.setShowDescriptions(enabled));
 

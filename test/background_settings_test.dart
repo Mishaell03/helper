@@ -6,6 +6,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/background_service.dart';
 import 'package:helper/hotkey_settings.dart';
+import 'package:helper/auto_hide_settings.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -15,9 +16,17 @@ void main() {
   var start = Hotkey.defaultStart;
   var pause = Hotkey.defaultPause;
   var stop = Hotkey.defaultStop;
+  var slotToggle = Hotkey.defaultSlotToggle;
+  var slotPrevious = Hotkey.defaultSlotPrevious;
+  var slotNext = Hotkey.defaultSlotNext;
   var autostart = false;
   var conflict = false;
   var autostartFailure = false;
+  var notificationEnabled = true;
+  var notificationFailure = false;
+  var normalAutoHide = const AutoHideOption(seconds: 10);
+  var viewerAutoHide = const AutoHideOption(seconds: 30);
+  var autoHideFailure = false;
   var recording = false;
   var saves = 0;
   final visibilityCalls = <String>[];
@@ -29,10 +38,16 @@ void main() {
     'start': start.toMap(),
     'pause': pause.toMap(),
     'stop': stop.toMap(),
+    'slotToggle': slotToggle.toMap(),
+    'slotPrevious': slotPrevious.toMap(),
+    'slotNext': slotNext.toMap(),
     'active': true,
     'warning': '',
     'autostart': autostart,
     'startHidden': false,
+    'slotNotificationEnabled': notificationEnabled,
+    'normalAutoHide': normalAutoHide.toMap(),
+    'viewerAutoHide': viewerAutoHide.toMap(),
   };
 
   setUp(() {
@@ -41,9 +56,17 @@ void main() {
     start = Hotkey.defaultStart;
     pause = Hotkey.defaultPause;
     stop = Hotkey.defaultStop;
+    slotToggle = Hotkey.defaultSlotToggle;
+    slotPrevious = Hotkey.defaultSlotPrevious;
+    slotNext = Hotkey.defaultSlotNext;
     autostart = false;
     conflict = false;
     autostartFailure = false;
+    notificationEnabled = true;
+    notificationFailure = false;
+    normalAutoHide = const AutoHideOption(seconds: 10);
+    viewerAutoHide = const AutoHideOption(seconds: 30);
+    autoHideFailure = false;
     recording = false;
     saves = 0;
     visibilityCalls.clear();
@@ -82,6 +105,47 @@ void main() {
               if (args['stop'] != null) {
                 stop = Hotkey.fromMap(args['stop'] as Map<Object?, Object?>);
               }
+              if (args['slotToggle'] != null) {
+                slotToggle = Hotkey.fromMap(
+                  args['slotToggle'] as Map<Object?, Object?>,
+                );
+              }
+              if (args['slotPrevious'] != null) {
+                slotPrevious = Hotkey.fromMap(
+                  args['slotPrevious'] as Map<Object?, Object?>,
+                );
+              }
+              if (args['slotNext'] != null) {
+                slotNext = Hotkey.fromMap(
+                  args['slotNext'] as Map<Object?, Object?>,
+                );
+              }
+              return state();
+            case 'setAutoHideSettings':
+              if (autoHideFailure) {
+                throw PlatformException(
+                  code: 'storage_error',
+                  message: 'Ошибка сохранения автоскрытия.',
+                );
+              }
+              final args = call.arguments as Map<Object?, Object?>;
+              normalAutoHide = AutoHideOption.fromMap(
+                args['normalAutoHide'],
+                10,
+              );
+              viewerAutoHide = AutoHideOption.fromMap(
+                args['viewerAutoHide'],
+                30,
+              );
+              return state();
+            case 'setSlotNotificationEnabled':
+              if (notificationFailure) {
+                throw PlatformException(
+                  code: 'storage_error',
+                  message: 'Ошибка сохранения подсказки.',
+                );
+              }
+              notificationEnabled = call.arguments as bool;
               return state();
             case 'setAutostart':
               if (autostartFailure) {
@@ -115,6 +179,141 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Finder preference(String label) => find.widgetWithText(SwitchListTile, label);
+
+  test(
+    'Автоскрытие: значения по умолчанию, диапазон и независимость',
+    () async {
+      final legacy = state()
+        ..remove('normalAutoHide')
+        ..remove('viewerAutoHide');
+      final defaults = BackgroundSettings.fromMap(legacy);
+      expect(defaults.normalAutoHide.enabled, isTrue);
+      expect(defaults.normalAutoHide.seconds, 10);
+      expect(defaults.viewerAutoHide.enabled, isTrue);
+      expect(defaults.viewerAutoHide.seconds, 30);
+      expect(AutoHideOption.durations, [
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+      ]);
+      final service = BackgroundService.instance;
+      var saved = await service.setAutoHideSettings(
+        const AutoHideOption(enabled: false, seconds: 10),
+        const AutoHideOption(seconds: 45),
+      );
+      expect(saved.normalAutoHide.enabled, isFalse);
+      expect(saved.viewerAutoHide.seconds, 45);
+      saved = await service.setAutoHideSettings(
+        const AutoHideOption(seconds: 60),
+        const AutoHideOption(enabled: false, seconds: 45),
+      );
+      expect(saved.normalAutoHide.seconds, 60);
+      expect(saved.normalAutoHide.enabled, isTrue);
+      expect(saved.viewerAutoHide.enabled, isFalse);
+      for (final invalid in [0, 5, 11, 61, 65]) {
+        await expectLater(
+          service.setAutoHideSettings(
+            AutoHideOption(seconds: invalid),
+            saved.viewerAutoHide,
+          ),
+          throwsFormatException,
+        );
+      }
+      expect(
+        AutoHideOption.fromMap({'enabled': false, 'seconds': 11}, 30).seconds,
+        30,
+      );
+    },
+  );
+
+  testWidgets(
+    'Автоскрытие: отдельные переключатели, длительности, повторная загрузка и ошибка',
+    (tester) async {
+      await open(tester);
+      final normal = preference('Автоскрытие основного окна');
+      final viewer = preference('Автоскрытие просмотра текста');
+      await tester.ensureVisible(normal);
+      await tester.tap(normal);
+      await tester.pumpAndSettle();
+      expect(normalAutoHide.enabled, isFalse);
+      expect(viewerAutoHide.enabled, isTrue);
+      expect(
+        tester
+            .widget<DropdownButton<int>>(
+              find.byKey(const ValueKey('normalAutoHideSeconds')),
+            )
+            .onChanged,
+        isNull,
+      );
+      final duration = find.byKey(const ValueKey('viewerAutoHideSeconds'));
+      await tester.ensureVisible(duration);
+      expect(
+        tester
+            .widget<DropdownButton<int>>(duration)
+            .items!
+            .map((item) => item.value),
+        AutoHideOption.durations,
+      );
+      await tester.tap(duration);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('45 с').last);
+      await tester.pumpAndSettle();
+      expect(viewerAutoHide.seconds, 45);
+      expect(normalAutoHide.enabled, isFalse);
+      autoHideFailure = true;
+      await tester.ensureVisible(viewer);
+      await tester.tap(viewer);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(viewer).value, isTrue);
+      expect(find.text('Ошибка сохранения автоскрытия.'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await open(tester);
+      expect(tester.widget<SwitchListTile>(normal).value, isFalse);
+      expect(tester.widget<DropdownButton<int>>(duration).value, 45);
+    },
+  );
+
+  test('Старые настройки включают подсказку по умолчанию', () {
+    final legacy = state()..remove('slotNotificationEnabled');
+    expect(BackgroundSettings.fromMap(legacy).slotNotificationEnabled, isTrue);
+  });
+
+  testWidgets(
+    'Подсказка сохраняется, перечитывается; ошибка не меняет переключатель',
+    (tester) async {
+      await open(tester);
+      final tile = preference('Показывать подсказку выбранного блока');
+      await tester.ensureVisible(tile);
+      expect(tester.widget<SwitchListTile>(tile).value, isTrue);
+      notificationFailure = true;
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(tile).value, isTrue);
+      expect(notificationEnabled, isTrue);
+      expect(find.text('Ошибка сохранения подсказки.'), findsOneWidget);
+      notificationFailure = false;
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(notificationEnabled, isFalse);
+      await tester.pumpWidget(const SizedBox());
+      await open(tester);
+      expect(tester.widget<SwitchListTile>(tile).value, isFalse);
+      await tester.ensureVisible(tile);
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(notificationEnabled, isTrue);
+    },
+  );
+
   test('Новые значения по умолчанию используют F12 и F4', () {
     expect(Hotkey.defaultToggle.label, 'Ctrl + Shift + F12');
     expect(Hotkey.defaultExit.label, 'Ctrl + Shift + F4');
@@ -122,6 +321,95 @@ void main() {
     expect(Hotkey.defaultStart.label, 'Ctrl + Shift + F6');
     expect(Hotkey.defaultPause.label, 'Ctrl + Shift + F7');
     expect(Hotkey.defaultStop.label, 'Ctrl + Shift + F8');
+    expect(Hotkey.defaultSlotToggle.label, 'Ctrl + Shift + F3');
+    expect(Hotkey.defaultSlotPrevious.label, 'Ctrl + Shift + ←');
+    expect(Hotkey.defaultSlotNext.label, 'Ctrl + Shift + →');
+  });
+
+  test('Старый снимок настроек получает стандартные клавиши навигации', () {
+    final legacy = state()
+      ..remove('slotToggle')
+      ..remove('slotPrevious')
+      ..remove('slotNext');
+    final settings = BackgroundSettings.fromMap(legacy);
+    expect(settings.slotToggle.sameAs(Hotkey.defaultSlotToggle), isTrue);
+    expect(settings.slotPrevious.sameAs(Hotkey.defaultSlotPrevious), isTrue);
+    expect(settings.slotNext.sameAs(Hotkey.defaultSlotNext), isTrue);
+  });
+
+  test('Навигация не может дублировать клавиши ввода или друг друга', () async {
+    await expectLater(
+      BackgroundService.instance.save(
+        Hotkey.defaultToggle,
+        Hotkey.defaultExit,
+        start: Hotkey.defaultStart,
+        slotNext: Hotkey.defaultStart,
+      ),
+      throwsFormatException,
+    );
+    await expectLater(
+      BackgroundService.instance.save(
+        Hotkey.defaultToggle,
+        Hotkey.defaultExit,
+        slotPrevious: Hotkey.defaultSlotNext,
+        slotNext: Hotkey.defaultSlotNext,
+      ),
+      throwsFormatException,
+    );
+    expect(saves, 0);
+  });
+
+  testWidgets('Все три действия навигации переназначаются и перечитываются', (
+    tester,
+  ) async {
+    await open(tester);
+    const oldKeys = [
+      'Ctrl + Shift + F3',
+      'Ctrl + Shift + ←',
+      'Ctrl + Shift + →',
+    ];
+    const newKeys = [Hotkey(3, 0x78), Hotkey(3, 0x79), Hotkey(3, 0x7a)];
+    for (var i = 0; i < oldKeys.length; ++i) {
+      final button = find.text(oldKeys[i]);
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      ServicesBinding.instance.channelBuffers.push(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          MethodCall('recorded', newKeys[i].toMap()),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
+      conflict = i == 0;
+      if (conflict) {
+        await tester.tap(find.text('Сохранить'));
+        await tester.pumpAndSettle();
+        expect(find.text('Сочетание занято. Выберите другое.'), findsOneWidget);
+        expect(slotToggle.sameAs(Hotkey.defaultSlotToggle), isTrue);
+        conflict = false;
+      }
+      await tester.tap(find.text('Сохранить'));
+      await tester.pumpAndSettle();
+      expect(recording, isFalse);
+    }
+    expect(slotToggle.sameAs(newKeys[0]), isTrue);
+    expect(slotPrevious.sameAs(newKeys[1]), isTrue);
+    expect(slotNext.sameAs(newKeys[2]), isTrue);
+    expect(start.sameAs(Hotkey.defaultStart), isTrue);
+    await tester.pumpWidget(const SizedBox());
+    await open(tester);
+    for (final key in newKeys) {
+      expect(find.text(key.label), findsOneWidget);
+    }
+    final defaults = find.text('Восстановить настройки по умолчанию');
+    await tester.ensureVisible(defaults);
+    await tester.tap(defaults);
+    await tester.pumpAndSettle();
+    expect(slotToggle.sameAs(Hotkey.defaultSlotToggle), isTrue);
+    expect(slotPrevious.sameAs(Hotkey.defaultSlotPrevious), isTrue);
+    expect(slotNext.sameAs(Hotkey.defaultSlotNext), isTrue);
   });
 
   test(
@@ -264,24 +552,19 @@ void main() {
     'Автозапуск сохраняется через канал; при ошибке переключатель не меняется',
     (tester) async {
       await open(tester);
-      await tester.ensureVisible(find.byType(SwitchListTile));
+      final tile = preference('Запускать вместе с Windows');
+      await tester.ensureVisible(tile);
       autostartFailure = true;
-      await tester.tap(find.byType(Switch));
+      await tester.tap(tile);
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
-        isFalse,
-      );
+      expect(tester.widget<SwitchListTile>(tile).value, isFalse);
       expect(find.text('Не удалось включить автозапуск.'), findsOneWidget);
       autostartFailure = false;
-      await tester.tap(find.byType(Switch));
+      await tester.tap(tile);
       await tester.pumpAndSettle();
       expect(autostart, isTrue);
-      expect(
-        tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
-        isTrue,
-      );
-      await tester.tap(find.byType(Switch));
+      expect(tester.widget<SwitchListTile>(tile).value, isTrue);
+      await tester.tap(tile);
       await tester.pumpAndSettle();
       expect(autostart, isFalse);
     },

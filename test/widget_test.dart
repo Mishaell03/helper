@@ -22,6 +22,10 @@ void main() {
   String? clipboard;
   var automationStarts = 0;
   final viewerEscapeRequests = <bool>[];
+  final selectionNotifications = <Map<Object?, Object?>>[];
+  final resetCalls = <String>[];
+  final autoHideContexts = <Map<Object?, Object?>>[];
+  var resetFailure = false;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('helper_ui_');
@@ -32,6 +36,10 @@ void main() {
     clipboard = null;
     automationStarts = 0;
     viewerEscapeRequests.clear();
+    selectionNotifications.clear();
+    resetCalls.clear();
+    autoHideContexts.clear();
+    resetFailure = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
           if (call.method == 'Clipboard.setData') {
@@ -59,6 +67,24 @@ void main() {
         .setMockMethodCallHandler(const MethodChannel('helper/background'), (
           call,
         ) async {
+          if (call.method == 'setDataResetting') {
+            resetCalls.add('gate:${call.arguments}');
+          }
+          if (call.method == 'setAutoHideContext') {
+            autoHideContexts.add(call.arguments as Map<Object?, Object?>);
+          }
+          if (call.method == 'resetApplicationSettings') {
+            resetCalls.add('reset');
+            if (resetFailure) {
+              throw PlatformException(
+                code: 'storage_error',
+                message: 'Отказ сброса настроек.',
+              );
+            }
+          }
+          if (call.method == 'selectedBlockChanged') {
+            selectionNotifications.add(call.arguments as Map<Object?, Object?>);
+          }
           if (call.method == 'setViewerEscapeEnabled') {
             viewerEscapeRequests.add(call.arguments as bool);
           }
@@ -154,6 +180,143 @@ void main() {
       .id;
 
   testWidgets(
+    'Канал подсказки: реальный ID, без запуска, перестроения и повторного выбора',
+    (tester) async {
+      final input = await file(
+        tester,
+        'slots.md',
+        '# Один\n\nТекст\n---\n# Два 😀\n\nЕщё',
+      );
+      await tester.runAsync(() => controller.importPaths([input.path]));
+      await open(tester);
+      expect(selectionNotifications, isEmpty);
+      final ids = controller.blocks.map((block) => block.id).toList();
+      await tester.tap(find.text('Один'));
+      await tester.pumpAndSettle();
+      expect(selectionNotifications, isEmpty);
+      await navigateSlot(tester, 1);
+      expect(selectionNotifications, [
+        {'id': ids[1], 'name': 'Два 😀'},
+      ]);
+      await tester.tap(find.text('Два 😀'));
+      await tester.pumpAndSettle();
+      expect(selectionNotifications, hasLength(1));
+      await tester.runAsync(controller.load);
+      await settle(tester);
+      expect(selectionNotifications, hasLength(1));
+      await navigateSlot(tester, -1);
+      expect(selectionNotifications.last, {'id': ids[0], 'name': 'Один'});
+      await navigateSlot(tester, -1);
+      expect(selectionNotifications.last, {'id': ids[1], 'name': 'Два 😀'});
+      await navigateSlot(tester, 1);
+      expect(selectionNotifications.last, {'id': ids[0], 'name': 'Один'});
+      expect(selectionNotifications, hasLength(4));
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
+    'Единственный блок при круговой навигации не вызывает подсказку повторно',
+    (tester) async {
+      final input = await file(tester, 'single.md', '# Один\n\nТекст');
+      await tester.runAsync(() => controller.importPaths([input.path]));
+      await open(tester);
+      final id = selectedSlot(tester);
+      await navigateSlot(tester, 1);
+      await navigateSlot(tester, -1);
+      expect(selectedSlot(tester), id);
+      expect(selectionNotifications, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
+    'Автоскрытие получает контекст просмотра и не сбрасывается перестроением',
+    (tester) async {
+      final input = await file(tester, 'view.md', '# Блок\n\nТекст');
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      expect(autoHideContexts.last, {'viewer': false, 'suspended': false});
+      autoHideContexts.clear();
+      await tester.runAsync(controller.load);
+      await settle(tester);
+      expect(autoHideContexts, isEmpty);
+      await doubleTap(tester, find.text('Блок'));
+      await settle(tester);
+      expect(autoHideContexts.last, {'viewer': true, 'suspended': false});
+      await tester.tap(find.byTooltip('Назад (Esc)'));
+      await settle(tester);
+      expect(autoHideContexts.last, {'viewer': false, 'suspended': false});
+      expect(automationStarts, 0);
+      await tester.pumpWidget(const SizedBox());
+      expect(autoHideContexts.last, {'viewer': false, 'suspended': true});
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
+    'Ручной архив, независимое закрепление, восстановление и навигация слотов',
+    (tester) async {
+      final input = await file(
+        tester,
+        'archive.txt',
+        '# Один\n\nПервый\n---\n# Два\n\nВторой\n---\n# Три\n\nТретий',
+      );
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      final ids = controller.blocks.map((block) => block.id).toList();
+      Finder card(int id) => find.byKey(ValueKey('block-$id'));
+      Finder action(int id, String tooltip) =>
+          find.descendant(of: card(id), matching: find.byTooltip(tooltip));
+      await tester.tap(action(ids[1], 'В архив'));
+      await settle(tester);
+      expect(selectedSlot(tester), ids[0]);
+      expect(find.text('Два'), findsNothing);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      await tester.tap(action(ids[0], 'Закрепить'));
+      await settle(tester);
+      await tester.tap(action(ids[0], 'В архив'));
+      await settle(tester);
+      expect(selectedSlot(tester), ids[2]);
+      await tester.tap(find.byTooltip('Закреплённые'));
+      await settle(tester);
+      expect(find.text('Нет закреплённых блоков.'), findsOneWidget);
+      await tester.tap(find.byTooltip('Архив'));
+      await settle(tester);
+      expect(find.byType(BlockCard), findsNWidgets(2));
+      expect(find.byIcon(Icons.check), findsNothing);
+      expect(tester.getSize(card(ids[0])).height, BlockCard.extent);
+      await navigateSlot(tester, 1);
+      expect(selectedSlot(tester), ids[1]);
+      await tester.tap(action(ids[0], 'Восстановить из архива'));
+      await settle(tester);
+      expect(selectedSlot(tester), ids[1]);
+      expect(find.byIcon(Icons.check), findsNothing);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      await tester.tap(find.byTooltip('Закреплённые'));
+      await settle(tester);
+      expect(find.text('Один'), findsOneWidget);
+      expect(tester.widget<BlockCard>(card(ids[0])).block.pinned, isTrue);
+      expect(find.byIcon(Icons.check), findsNothing);
+      await tester.tap(find.byTooltip('Все блоки'));
+      await settle(tester);
+      await navigateSlot(tester, 1);
+      expect(selectedSlot(tester), ids[2]); // Skip the archived second slot.
+      await tester.tap(find.byTooltip('Импортированные файлы'));
+      await settle(tester);
+      await tester.tap(find.text('archive.txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('Два'), findsNothing);
+      expect(find.text('Один'), findsOneWidget);
+      expect(automationStarts, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
     'Уведомления с кнопкой закрытия исчезают через пять секунд',
     (tester) async {
       tester.binding.platformDispatcher.accessibilityFeaturesTestValue =
@@ -197,6 +360,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(selectedSlot(tester), ids.first);
       await navigateSlot(tester, -1);
+      expect(selectedSlot(tester), ids.last);
+      await navigateSlot(tester, 1);
       expect(selectedSlot(tester), ids.first);
       FocusManager.instance.primaryFocus?.unfocus();
       await tester.pump();
@@ -217,7 +382,15 @@ void main() {
         tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
         '\nТретий\n',
       );
-      await navigateSlot(tester, 1); // Clamp, do not wrap.
+      await navigateSlot(
+        tester,
+        1,
+      ); // Wrap to the first block, including the viewer.
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        '\nПервый\n',
+      );
+      await navigateSlot(tester, -1);
       expect(
         tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
         '\nТретий\n',
@@ -255,9 +428,9 @@ void main() {
       await navigateSlot(tester, 1);
       expect(selectedSlot(tester), last.id);
       await navigateSlot(tester, 1);
-      expect(selectedSlot(tester), last.id);
-      await navigateSlot(tester, -1);
       expect(selectedSlot(tester), first.id);
+      await navigateSlot(tester, -1);
+      expect(selectedSlot(tester), last.id);
       await doubleTap(tester, find.text('Три'));
       await settle(tester);
       await tester.tap(find.byTooltip('Назад (Esc)'));
@@ -657,6 +830,89 @@ void main() {
       expect(controller.files, isEmpty);
       expect(await tester.runAsync(repository.showDescriptions), isFalse);
     },
+  );
+
+  testWidgets(
+    'Настройки: скорость над единым блоком переключателей, без логотипа',
+    (tester) async {
+      await open(tester);
+      await tester.tap(find.byTooltip('Настройки'));
+      await settle(tester);
+      expect(find.text('Helper'), findsNothing);
+      expect(find.bySemanticsLabel('Логотип Helper'), findsNothing);
+      final switches = find.byKey(const Key('preferencesSwitches'));
+      expect(
+        find.descendant(of: switches, matching: find.byType(SwitchListTile)),
+        findsNWidgets(5),
+      );
+      expect(
+        tester.getTopLeft(find.byKey(const Key('typingSpeed'))).dy,
+        lessThan(tester.getTopLeft(switches).dy),
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
+    'Удаление данных требует подтверждения; ошибка сохраняет блоки, успех сбрасывает настройки',
+    (tester) async {
+      final input = await file(tester, 'данные.md', '# Блок\n\nТекст');
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      await tester.runAsync(() async {
+        await repository.setPinned(controller.blocks.single.id, true);
+        await repository.completeInsertion(controller.blocks.single.id);
+        await repository.setShowDescriptions(false);
+        await controller.load();
+      });
+      await tester.tap(find.byTooltip('Настройки'));
+      await settle(tester);
+      final button = find.text('Удалить все данные приложения');
+      Future<void> confirmReset() async {
+        await tester.scrollUntilVisible(
+          button,
+          150,
+          scrollable: find
+              .descendant(
+                of: find.byKey(const Key('preferencesList')),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        expect(find.text('Удалить все данные приложения?'), findsOneWidget);
+      }
+
+      await confirmReset();
+      await tester.tap(find.text('Отмена'));
+      await settle(tester);
+      expect(controller.blocks, hasLength(1));
+      expect(resetCalls, isEmpty);
+      resetFailure = true;
+      await confirmReset();
+      await tester.tap(find.widgetWithText(TextButton, 'Удалить'));
+      await settle(tester);
+      expect(controller.blocks, hasLength(1));
+      expect(resetCalls, ['gate:true', 'reset', 'gate:false']);
+      expect(find.textContaining('Сброс не завершён.'), findsOneWidget);
+      await tester.tap(find.widgetWithText(SnackBarAction, 'Закрыть'));
+      await tester.pumpAndSettle();
+      resetCalls.clear();
+      resetFailure = false;
+      await confirmReset();
+      await tester.tap(find.widgetWithText(TextButton, 'Удалить'));
+      await settle(tester);
+      expect(controller.blocks, isEmpty);
+      expect(controller.files, isEmpty);
+      expect(controller.showDescriptions, isTrue);
+      expect(resetCalls, ['gate:true', 'reset', 'gate:false']);
+      expect(await tester.runAsync(input.exists), isTrue);
+      expect(await tester.runAsync(repository.showDescriptions), isTrue);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
   );
 
   testWidgets('Прокрутка за выбранным блоком и длинные заголовки', (

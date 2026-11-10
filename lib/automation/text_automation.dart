@@ -58,6 +58,11 @@ class AutomationState {
       phase == AutomationPhase.countdown ||
       phase == AutomationPhase.typing ||
       phase == AutomationPhase.paused;
+  bool get successfullyCompleted =>
+      phase == AutomationPhase.completed &&
+      blockId > 0 &&
+      total > 0 &&
+      position == total;
   String get label => switch (phase) {
     AutomationPhase.idle => 'Готово к вводу',
     AutomationPhase.countdown => 'Начало через $countdown с',
@@ -113,6 +118,11 @@ class TextAutomationController extends ChangeNotifier {
   int? preparingBlock;
   String? failure;
   VoidCallback? onStartRequested;
+  AsyncCallback? onArchived;
+  ValueChanged<String>? onArchiveError;
+  Future<void> _archiveTail = Future.value();
+  int _pendingArchives = 0;
+  bool get archiving => _pendingArchives != 0;
   int _generation = 0;
   bool _disposed = false;
   Future<void> _speedTail = Future.value();
@@ -129,14 +139,48 @@ class TextAutomationController extends ChangeNotifier {
   }
 
   void _apply(AutomationState next) {
-    if (_disposed || next.revision < state.revision) return;
+    if (_disposed ||
+        next.revision < state.revision ||
+        next.stopToken < state.stopToken) {
+      return;
+    }
+    final alreadyCompleted =
+        state.successfullyCompleted &&
+        state.blockId == next.blockId &&
+        state.stopToken == next.stopToken;
     if (next.stopToken > state.stopToken) {
       ++_generation;
       preparingBlock = null;
     }
     state = next;
+    if (next.successfullyCompleted && !alreadyCompleted) {
+      _archiveCompletedBlock(next.blockId);
+    }
     _notify();
   }
+
+  void _archiveCompletedBlock(int blockId) {
+    ++_pendingArchives;
+    // Capture the native operation's ID, never the UI's current selection.
+    _archiveTail = _archiveTail.then((_) async {
+      try {
+        await repository.completeInsertion(blockId);
+        if (!_disposed) await onArchived?.call();
+      } catch (_) {
+        if (!_disposed) {
+          onArchiveError?.call(
+            'Не удалось обновить архив после ввода. '
+            'Текст сохранён; попробуйте архивировать блок вручную.',
+          );
+        }
+      } finally {
+        --_pendingArchives;
+        _notify();
+      }
+    });
+  }
+
+  Future<void> flushArchive() => _archiveTail;
 
   Future<void> initialize() async {
     try {

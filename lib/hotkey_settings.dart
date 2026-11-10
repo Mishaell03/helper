@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'background_service.dart';
+import 'auto_hide_settings.dart';
 import 'transient_message.dart';
 
 class HotkeySettings extends StatefulWidget {
@@ -27,6 +28,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       .toList();
   bool _busy = true;
   bool _autostart = false;
+  bool _slotNotificationEnabled = true;
+  AutoHideOption _normalAutoHide = const AutoHideOption(seconds: 10);
+  AutoHideOption _viewerAutoHide = const AutoHideOption(seconds: 30);
   String? _message;
   int _messageRevision = 0;
 
@@ -50,6 +54,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       setState(() {
         _keys = HotkeyAction.values.map(settings.hotkey).toList();
         _autostart = settings.autostart;
+        _slotNotificationEnabled = settings.slotNotificationEnabled;
+        _normalAutoHide = settings.normalAutoHide;
+        _viewerAutoHide = settings.viewerAutoHide;
         _setMessage(settings.warning.isEmpty ? null : settings.warning);
       });
     } catch (error) {
@@ -69,6 +76,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
         start: Hotkey.defaultStart,
         pause: Hotkey.defaultPause,
         stop: Hotkey.defaultStop,
+        slotToggle: Hotkey.defaultSlotToggle,
+        slotPrevious: Hotkey.defaultSlotPrevious,
+        slotNext: Hotkey.defaultSlotNext,
       );
       if (!mounted) return;
       setState(() {
@@ -103,6 +113,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
               start: keys[2],
               pause: keys[3],
               stop: keys[4],
+              slotToggle: keys[5],
+              slotPrevious: keys[6],
+              slotNext: keys[7],
             );
           },
         ),
@@ -147,6 +160,83 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     }
   }
 
+  Future<void> _setSlotNotificationEnabled(bool enabled) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final settings = await _service.setSlotNotificationEnabled(enabled);
+      if (mounted) {
+        setState(
+          () => _slotNotificationEnabled = settings.slotNotificationEnabled,
+        );
+      }
+    } catch (error) {
+      if (mounted) setState(() => _setMessage(_error(error)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _setAutoHide(bool viewer, AutoHideOption option) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final settings = await _service.setAutoHideSettings(
+        viewer ? _normalAutoHide : option,
+        viewer ? option : _viewerAutoHide,
+      );
+      if (!mounted) return;
+      setState(() {
+        _normalAutoHide = settings.normalAutoHide;
+        _viewerAutoHide = settings.viewerAutoHide;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _setMessage(_error(error)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _autoHideTile(bool viewer) {
+    final option = viewer ? _viewerAutoHide : _normalAutoHide;
+    final label = viewer
+        ? 'Автоскрытие просмотра текста'
+        : 'Автоскрытие основного окна';
+    return Row(
+      children: [
+        Expanded(
+          child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(label),
+            value: option.enabled,
+            onChanged: _busy
+                ? null
+                : (enabled) =>
+                      _setAutoHide(viewer, option.copyWith(enabled: enabled)),
+          ),
+        ),
+        const SizedBox(width: 8),
+        DropdownButton<int>(
+          key: ValueKey(
+            viewer ? 'viewerAutoHideSeconds' : 'normalAutoHideSeconds',
+          ),
+          value: option.seconds,
+          items: [
+            for (final seconds in AutoHideOption.durations)
+              DropdownMenuItem(value: seconds, child: Text('$seconds с')),
+          ],
+          onChanged: _busy || !option.enabled
+              ? null
+              : (seconds) {
+                  if (seconds != null) {
+                    _setAutoHide(viewer, option.copyWith(seconds: seconds));
+                  }
+                },
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final content = SingleChildScrollView(
@@ -184,7 +274,6 @@ class _HotkeySettingsState extends State<HotkeySettings> {
           ],
           if (!widget.embedded || widget.preferencesOnly) ...[
             if (!widget.preferencesOnly) const Divider(),
-            Text('Автозапуск', style: Theme.of(context).textTheme.titleMedium),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Запускать вместе с Windows'),
@@ -194,6 +283,14 @@ class _HotkeySettingsState extends State<HotkeySettings> {
               value: _autostart,
               onChanged: _busy ? null : _setAutostart,
             ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Показывать подсказку выбранного блока'),
+              value: _slotNotificationEnabled,
+              onChanged: _busy ? null : _setSlotNotificationEnabled,
+            ),
+            _autoHideTile(false),
+            _autoHideTile(true),
           ],
           if (_message != null)
             TransientMessage(
@@ -208,7 +305,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     );
     if (widget.embedded) {
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        padding: widget.preferencesOnly
+            ? EdgeInsets.zero
+            : const EdgeInsets.symmetric(horizontal: 12),
         child: widget.scrollable ? content : content.child!,
       );
     }
