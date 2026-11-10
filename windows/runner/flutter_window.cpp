@@ -5,6 +5,7 @@
 #include "flutter/generated_plugin_registrant.h"
 #include "capture_exclusion.h"
 #include "frameless_window.h"
+#include "window_activation.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project, bool start_hidden)
     : project_(project), start_hidden_(start_hidden) {}
@@ -31,6 +32,10 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  if (!SetWindowSubclass(flutter_controller_->view()->GetNativeWindow(),
+                         HelperViewActivationProc, 0, 0)) {
+    return false;
+  }
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   background_manager_ = std::make_unique<BackgroundManager>(
       GetHandle(), flutter_controller_->engine()->messenger(), start_hidden_);
@@ -57,6 +62,11 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                                 LPARAM const lparam) noexcept {
+  // Do not eat the click: Flutter must still receive the pointer interaction.
+  if (!background_manager_ || !background_manager_->keyboard_activation()) {
+    if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    if (message == WM_POINTERACTIVATE) return PA_NOACTIVATE;
+  }
   // Enforce this before Flutter/plugin delegates, including during startup and
   // User32's nested move/size loop. Never fall back to classic frame painting.
   if (const auto frame = HandleFramelessMessage(hwnd, message, wparam, lparam)) {

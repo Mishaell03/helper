@@ -58,6 +58,19 @@ public static class HelperWinTest {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder name, int count);
     [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wp, IntPtr lp);
+    public static void AssertNonActivating(IntPtr hwnd, IntPtr foreground) {
+        if ((GetWindowLong(hwnd, -20) & 0x08000000) == 0)
+            throw new Exception("WS_EX_NOACTIVATE is missing.");
+        IntPtr child = GetWindow(hwnd, 5); // GW_CHILD: Flutter view.
+        if (child == IntPtr.Zero) throw new Exception("Flutter child HWND is missing.");
+        foreach (IntPtr target in new[] { hwnd, child }) {
+            if (SendMessage(target, 0x21, hwnd, new IntPtr(0x02010001)).ToInt64() != 3)
+                throw new Exception("WM_MOUSEACTIVATE must return MA_NOACTIVATE without eating the click.");
+        }
+        if (GetForegroundWindow() != foreground)
+            throw new Exception("Helper stole foreground focus.");
+    }
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateWindowEx(
@@ -158,20 +171,6 @@ function Assert-StaysHidden([int]$Milliseconds) {
 $app = $null
 $probe = [IntPtr]::Zero
 try {
-    $app = Start-Process $Executable -PassThru
-    $script:hwnd = [IntPtr]::Zero
-    Wait-For {
-        $script:hwnd = [HelperWinTest]::WindowFor($app.Id)
-        $script:hwnd -ne [IntPtr]::Zero -and [HelperWinTest]::IsWindowVisible($script:hwnd)
-    } 'Application did not launch visibly. Check startup errors and shortcut conflicts.'
-    $styles = [HelperWinTest]::GetWindowLong($script:hwnd, -20)
-    if (($styles -band 0x80) -eq 0 -or ($styles -band 0x40000) -ne 0) {
-        throw 'Expected WS_EX_TOOLWINDOW and no WS_EX_APPWINDOW.'
-    }
-    [HelperWinTest]::AssertFrameless($script:hwnd)
-    [HelperWinTest]::CheckResizeFrame($script:hwnd)
-
-    # A real, independent native window holds focus while shortcuts are tested.
     $probe = [HelperWinTest]::CreateWindowEx(0, 'STATIC', 'Global hotkey test',
         0x10CF0000, 100, 100, 400, 200, [IntPtr]::Zero, [IntPtr]::Zero,
         [IntPtr]::Zero, [IntPtr]::Zero)
@@ -180,12 +179,35 @@ try {
     if ([HelperWinTest]::GetForegroundWindow() -ne $probe) {
         throw 'Could not focus the other window; rerun from an interactive desktop.'
     }
+    $app = Start-Process $Executable -PassThru
+    $script:hwnd = [IntPtr]::Zero
+    Wait-For {
+        $script:hwnd = [HelperWinTest]::WindowFor($app.Id)
+        $script:hwnd -ne [IntPtr]::Zero -and [HelperWinTest]::IsWindowVisible($script:hwnd)
+    } 'Application did not launch visibly. Check startup errors and shortcut conflicts.'
+    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+    $styles = [HelperWinTest]::GetWindowLong($script:hwnd, -20)
+    if (($styles -band 0x80) -eq 0 -or ($styles -band 0x40000) -ne 0) {
+        throw 'Expected WS_EX_TOOLWINDOW and no WS_EX_APPWINDOW.'
+    }
+    [HelperWinTest]::AssertFrameless($script:hwnd)
+    [HelperWinTest]::CheckResizeFrame($script:hwnd)
+
+    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
     [HelperWinTest]::Shortcut(0x7b)
     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not hide Helper.'
     if ($app.HasExited) { throw 'Hiding terminated Helper.' }
     [HelperWinTest]::Shortcut(0x7b)
     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not restore Helper.'
     [HelperWinTest]::AssertFrameless($script:hwnd)
+    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+    for ($cycle = 0; $cycle -lt 10; ++$cycle) {
+        [HelperWinTest]::Shortcut(0x7b)
+        Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Repeated hide failed.'
+        [HelperWinTest]::Shortcut(0x7b)
+        Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Repeated show failed.'
+        [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+    }
 
     [void][HelperWinTest]::PostMessage($script:hwnd, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'WM_CLOSE did not hide Helper.'
@@ -193,6 +215,7 @@ try {
     $second = Start-Process $Executable -PassThru
     if (-not $second.WaitForExit(10000)) { throw 'A second application instance remained alive.' }
     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Second launch did not restore the existing window.'
+    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
 
     [HelperWinTest]::TaskView()
     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Win+Tab did not hide Helper.'
@@ -222,6 +245,7 @@ try {
     [void][HelperWinTest]::SetForegroundWindow($probe)
     [HelperWinTest]::Shortcut(0x7b)
     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not show the background-started window.'
+    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
     [HelperWinTest]::Shortcut(0x73)
     if (-not $app.WaitForExit(10000)) { throw 'Background-started application did not exit.' }
     Write-Output 'PASS: native launch, styles, global toggle/exit, close-to-hide, single instance, hidden background initialization and no focus stealing.'

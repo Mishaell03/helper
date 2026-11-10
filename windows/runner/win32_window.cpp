@@ -135,7 +135,7 @@ bool Win32Window::Create(const std::wstring& title,
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
 
-  HWND window = CreateWindow(
+  HWND window = CreateWindowEx(WS_EX_NOACTIVATE,
       window_class, title.c_str(), static_cast<DWORD>(FramelessWindowStyle(WS_OVERLAPPEDWINDOW)),
       Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
       Scale(size.width, scale_factor), Scale(size.height, scale_factor),
@@ -151,7 +151,7 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  return ShowWindow(window_handle_, SW_SHOWNOACTIVATE);
 }
 
 // static
@@ -209,7 +209,8 @@ Win32Window::MessageHandler(HWND hwnd,
     }
 
     case WM_ACTIVATE:
-      if (LOWORD(wparam) != WA_INACTIVE && child_content_ != nullptr) {
+      if (LOWORD(wparam) != WA_INACTIVE && child_content_ != nullptr &&
+          (GetWindowLongPtr(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE) == 0) {
         SetFocus(child_content_);
       }
       return 0;
@@ -246,8 +247,6 @@ void Win32Window::SetChildContent(HWND content) {
 
   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
              frame.bottom - frame.top, true);
-
-  SetFocus(child_content_);
 }
 
 RECT Win32Window::GetClientArea() {

@@ -214,8 +214,12 @@ BackgroundManager::BackgroundManager(HWND window,
         result->Error("invalid_argument", "Ожидается значение «включено» или «выключено».");
         return;
       }
+      if (*enabled) automation_->Pause("Запись горячей клавиши. Ввод приостановлен.");
+      if (!SetKeyboardActivation(*enabled)) {
+        result->Error("window_activation_error", "Не удалось изменить режим клавиатурного фокуса.");
+        return;
+      }
       recording_ = *enabled;
-      if (recording_) automation_->Pause("Запись горячей клавиши. Ввод приостановлен.");
       result->Success();
     } else if (method == "setAutostart") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
@@ -407,7 +411,9 @@ BackgroundManager::Value BackgroundManager::State() const {
 
 bool BackgroundManager::ApplyStyles() {
   const LONG_PTR styles = GetWindowLongPtr(window_, GWL_EXSTYLE);
-  const LONG_PTR desired = (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+  LONG_PTR desired = (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+  if (keyboard_activation_) desired &= ~static_cast<LONG_PTR>(WS_EX_NOACTIVATE);
+  else desired |= WS_EX_NOACTIVATE;
   bool frame_changed = false;
   if (styles != desired) {
     SetLastError(ERROR_SUCCESS);
@@ -441,6 +447,52 @@ bool BackgroundManager::ApplyStyles() {
     return false;
   }
   return true;
+}
+
+bool BackgroundManager::SetKeyboardActivation(bool enabled) {
+  if (keyboard_activation_ == enabled) return true;
+  const HWND foreground = GetForegroundWindow();
+  if (enabled) {
+    keyboard_previous_foreground_ = foreground;
+    keyboard_previous_thread_ = GetWindowThreadProcessId(
+        foreground, &keyboard_previous_process_);
+  }
+  keyboard_activation_ = enabled;
+  const bool styles_applied = ApplyStyles();
+  if (!styles_applied && enabled) {
+    keyboard_activation_ = false;
+    ApplyStyles();
+    return false;
+  }
+  if (enabled) {
+    if (!SetForegroundWindow(window_)) {
+      SetKeyboardActivation(false);
+      return false;
+    }
+    // An already-active owner does not receive another WM_ACTIVATE.
+    if (HWND child = GetWindow(window_, GW_CHILD)) SetFocus(child);
+  } else {
+    DWORD process = 0;
+    const DWORD thread = GetWindowThreadProcessId(keyboard_previous_foreground_, &process);
+    // Never take focus back from an application the user switched to, or
+    // substitute an arbitrary window when the saved target is gone/minimized.
+    if (foreground == window_ && keyboard_previous_foreground_ != window_ &&
+        IsWindow(keyboard_previous_foreground_) &&
+        process != GetCurrentProcessId() && process == keyboard_previous_process_ &&
+        thread == keyboard_previous_thread_ &&
+        IsWindowVisible(keyboard_previous_foreground_) &&
+        IsWindowEnabled(keyboard_previous_foreground_) &&
+        !IsIconic(keyboard_previous_foreground_)) {
+      SetForegroundWindow(keyboard_previous_foreground_);
+    }
+    if (GetForegroundWindow() == window_) {
+      SetFocus(nullptr);
+      SetActiveWindow(nullptr);
+    }
+    keyboard_previous_foreground_ = nullptr;
+    keyboard_previous_process_ = keyboard_previous_thread_ = 0;
+  }
+  return styles_applied;
 }
 
 bool BackgroundManager::PreparePresentation() {
@@ -508,10 +560,10 @@ void BackgroundManager::RestoreExternalFocus() {
 }
 
 bool BackgroundManager::Show() {
-  return ShowWindowSafely(true);
+  return ShowWindowSafely();
 }
 
-bool BackgroundManager::ShowWindowSafely(bool activate) {
+bool BackgroundManager::ShowWindowSafely() {
   TraceCapture("show.begin", window_, hidden_, parking_.parked());
   if (!PreparePresentation()) {
     TraceCapture("show.prepare_failed", window_, hidden_, parking_.parked(), GetLastError());
@@ -531,9 +583,7 @@ bool BackgroundManager::ShowWindowSafely(bool activate) {
   // SW_HIDE preserves the rectangle. SetWindowPlacement is unnecessary here
   // and can itself reveal/activate the window before the intended ShowWindow.
   if (!IsWindowVisible(window_) || IsIconic(window_)) {
-    const int command = activate ? (IsIconic(window_) ? SW_RESTORE : SW_SHOW)
-                                 : SW_SHOWNOACTIVATE;
-    ShowWindow(window_, command);
+    ShowWindow(window_, SW_SHOWNOACTIVATE);
   }
   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
   if (hidden_) return false;
@@ -541,17 +591,9 @@ bool BackgroundManager::ShowWindowSafely(bool activate) {
   PostMessage(window_, kRefreshHelperFrame, 0, 0);
   RedrawWindow(window_, nullptr, nullptr,
       RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
-  if (activate) {
-    HWND foreground = GetForegroundWindow();
-    DWORD owner = 0;
-    GetWindowThreadProcessId(foreground, &owner);
-    if (foreground && owner != GetCurrentProcessId()) previous_foreground_ = foreground;
-    SetForegroundWindow(window_);
-  }
   if (HWND dialog = ImportDialogWindow()) {
     if (!ExcludeFromCapture(dialog)) return false;
-    ShowWindow(dialog, activate ? SW_SHOW : SW_SHOWNA);
-    if (activate) SetForegroundWindow(dialog);
+    ShowWindow(dialog, SW_SHOWNA);
   }
   TraceCapture("show.end", window_, hidden_, parking_.parked());
   return true;
@@ -567,7 +609,7 @@ HWND BackgroundManager::ImportDialogWindow() const {
 
 bool BackgroundManager::ShowCountdownInactive() {
   // Same composition/protection path, without taking focus from the editor.
-  return !import_dialog_ && ShowWindowSafely(false);
+  return !import_dialog_ && ShowWindowSafely();
 }
 
 void BackgroundManager::PickMarkdownFiles(
@@ -576,6 +618,7 @@ void BackgroundManager::PickMarkdownFiles(
     result->Error("import_error", "Диалог импорта уже открыт.");
     return;
   }
+  bool activation_restored = true;
   HRESULT status = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(import_dialog_.GetAddressOf()));
   const COMDLG_FILTERSPEC filters[] = {
@@ -589,11 +632,18 @@ void BackgroundManager::PickMarkdownFiles(
   if (SUCCEEDED(status)) status = import_dialog_->SetOkButtonLabel(L"Импортировать");
   if (SUCCEEDED(status)) {
     CaptureDialogScope capture_scope;
+    const bool was_keyboard_active = keyboard_activation_;
+    if (!SetKeyboardActivation(true)) {
+      import_dialog_.Reset();
+      result->Error("window_activation_error", "Не удалось активировать диалог импорта.");
+      return;
+    }
     if (watchdog_) watchdog_->SetNativeDialogOpen(true);
     // The Windows dialog pumps messages. HandleMessage defers exit until this
     // call returns so the messenger/result cannot be destroyed mid-callback.
     status = import_dialog_->Show(window_);
     if (watchdog_) watchdog_->SetNativeDialogOpen(false);
+    activation_restored = SetKeyboardActivation(was_keyboard_active);
   }
   flutter::EncodableList paths;
   if (SUCCEEDED(status)) {
@@ -622,7 +672,9 @@ void BackgroundManager::PickMarkdownFiles(
     }
   }
   import_dialog_.Reset();
-  if (SUCCEEDED(status) || status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+  if (!activation_restored) {
+    result->Error("window_activation_error", "Не удалось восстановить режим окна после импорта.");
+  } else if (SUCCEEDED(status) || status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
     result->Success(Value(paths));
   } else {
     result->Error("import_error", "Не удалось открыть диалог импорта. Код Windows: " +
@@ -768,8 +820,17 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
   if (message == WM_ACTIVATE && LOWORD(wparam) != WA_INACTIVE && lparam) {
     HWND previous = reinterpret_cast<HWND>(lparam);
     DWORD owner = 0;
-    GetWindowThreadProcessId(previous, &owner);
-    if (owner && owner != GetCurrentProcessId()) previous_foreground_ = previous;
+    const DWORD thread = GetWindowThreadProcessId(previous, &owner);
+    if (owner && owner != GetCurrentProcessId()) {
+      previous_foreground_ = previous;
+      if (keyboard_activation_) {
+        // If the user returned to the recorder from another application, that
+        // latest application, not the original one, is the restoration target.
+        keyboard_previous_foreground_ = previous;
+        keyboard_previous_process_ = owner;
+        keyboard_previous_thread_ = thread;
+      }
+    }
   }
   if (message == WM_DISPLAYCHANGE && parking_.parked()) parking_.Repark(window_);
   if (message == WM_SHOWWINDOW) TraceCapture(wparam ? "WM_SHOWWINDOW.show" : "WM_SHOWWINDOW.hide", window_, hidden_, parking_.parked());
@@ -800,13 +861,21 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
           RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
     }
   }
-  if (message == WM_WINDOWPOSCHANGING && lparam && !visibility_.may_show()) {
-    // Defend against plugin/window-initialization requests showing or focusing
-    // an autostarted window before an explicit reveal action.
+  if (message == WM_STYLECHANGING &&
+      wparam == static_cast<WPARAM>(GWL_EXSTYLE) && lparam) {
+    auto* styles = reinterpret_cast<STYLESTRUCT*>(lparam);
+    if (!keyboard_activation_) styles->styleNew |= WS_EX_NOACTIVATE;
+  }
+  if (message == WM_WINDOWPOSCHANGING && lparam) {
     auto* position = reinterpret_cast<WINDOWPOS*>(lparam);
-    position->flags &= ~static_cast<UINT>(SWP_SHOWWINDOW);
-    position->flags |= SWP_NOACTIVATE;
-    parking_.ConstrainPosition(position);
+    if (!keyboard_activation_) position->flags |= SWP_NOACTIVATE;
+    if (!visibility_.may_show()) {
+      // Defend against plugin/window-initialization requests showing or focusing
+      // an autostarted window before an explicit reveal action.
+      position->flags &= ~static_cast<UINT>(SWP_SHOWWINDOW);
+      position->flags |= SWP_NOACTIVATE;
+      parking_.ConstrainPosition(position);
+    }
   }
   if (automation_ && automation_->HandleMessage(message, wparam)) return true;
   if (message == WM_ENDSESSION && wparam != 0) automation_->Stop(false);
