@@ -154,6 +154,73 @@ void main() {
       .id;
 
   testWidgets(
+    'Ручной архив, независимое закрепление, восстановление и навигация слотов',
+    (tester) async {
+      final input = await file(
+        tester,
+        'archive.txt',
+        '# Один\n\nПервый\n---\n# Два\n\nВторой\n---\n# Три\n\nТретий',
+      );
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      final ids = controller.blocks.map((block) => block.id).toList();
+      Finder card(int id) => find.byKey(ValueKey('block-$id'));
+      Finder action(int id, String tooltip) =>
+          find.descendant(of: card(id), matching: find.byTooltip(tooltip));
+      await tester.tap(action(ids[1], 'В архив'));
+      await settle(tester);
+      expect(selectedSlot(tester), ids[0]);
+      expect(find.text('Два'), findsNothing);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      await tester.tap(action(ids[0], 'Закрепить'));
+      await settle(tester);
+      await tester.tap(action(ids[0], 'В архив'));
+      await settle(tester);
+      expect(selectedSlot(tester), ids[2]);
+      await tester.tap(find.byTooltip('Закреплённые'));
+      await settle(tester);
+      expect(find.text('Нет закреплённых блоков.'), findsOneWidget);
+      await tester.tap(find.byTooltip('Архив'));
+      await settle(tester);
+      expect(find.byType(BlockCard), findsNWidgets(2));
+      expect(find.byIcon(Icons.check), findsNWidgets(2));
+      expect(tester.getSize(card(ids[0])).height, BlockCard.extent);
+      expect(
+        find.ancestor(
+          of: find.byIcon(Icons.check).first,
+          matching: find.byType(IgnorePointer),
+        ),
+        findsWidgets,
+      );
+      await navigateSlot(tester, 1);
+      expect(selectedSlot(tester), ids[1]);
+      await tester.tap(action(ids[0], 'Восстановить из архива'));
+      await settle(tester);
+      expect(selectedSlot(tester), ids[1]);
+      expect(find.byIcon(Icons.check), findsOneWidget);
+      expect(find.byKey(const Key('fullBlockContent')), findsNothing);
+      await tester.tap(find.byTooltip('Закреплённые'));
+      await settle(tester);
+      expect(find.text('Один'), findsOneWidget);
+      expect(tester.widget<BlockCard>(card(ids[0])).block.pinned, isTrue);
+      expect(find.byIcon(Icons.check), findsNothing);
+      await tester.tap(find.byTooltip('Все блоки'));
+      await settle(tester);
+      await navigateSlot(tester, 1);
+      expect(selectedSlot(tester), ids[2]); // Skip the archived second slot.
+      await tester.tap(find.byTooltip('Импортированные файлы'));
+      await settle(tester);
+      await tester.tap(find.text('archive.txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('Два'), findsNothing);
+      expect(find.text('Один'), findsOneWidget);
+      expect(automationStarts, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
     'Уведомления с кнопкой закрытия исчезают через пять секунд',
     (tester) async {
       tester.binding.platformDispatcher.accessibilityFeaturesTestValue =

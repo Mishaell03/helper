@@ -20,7 +20,7 @@ import 'markdown_repository.dart';
 import 'models.dart';
 import 'block_display.dart';
 
-enum _View { blocks, pinned, settings }
+enum _View { blocks, pinned, archive, settings }
 
 enum _SettingsTab { files, hotkeys, preferences }
 
@@ -66,6 +66,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   static const _cardExtent = BlockCard.extent;
 
   List<BlockSummary> get _blocks => (_controller?.blocks ?? [])
+      .where((block) => block.archived == (_view == _View.archive))
       .where((block) => _view != _View.pinned || block.pinned)
       .toList();
   bool get _busy =>
@@ -147,6 +148,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             widget.automation ??
             TextAutomationController(controller.repository);
         _automation!.onStartRequested = () => _startSelected(fromHotkey: true);
+        _automation!.onArchived = controller.load;
+        _automation!.onArchiveError = _notify;
         _automation!.addListener(_automationChanged);
         await _automation!.initialize();
       }
@@ -179,6 +182,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   Future<void> _exitApplication() => _run(() async {
     await _automation?.stop();
+    await _automation?.flushArchive();
     await _automation?.flushPreferences();
     await BackgroundService.instance.exit();
   });
@@ -220,6 +224,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         );
       }
       await _automation?.flushPreferences();
+      await _automation?.flushArchive();
       await launch();
       await BackgroundService.instance.exit();
     } finally {
@@ -237,12 +242,14 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     if (!mounted) return;
     final blocks = _blocks;
     setState(() {
-      if (!blocks.any((block) => block.id == _selected)) {
-        _selected = blocks.isEmpty ? null : blocks.first.id;
-      }
       if (_opened != null &&
           !_controller!.blocks.any((block) => block.id == _opened!.id)) {
         _opened = null;
+      }
+      if (_opened == null &&
+          !_opening &&
+          !blocks.any((block) => block.id == _selected)) {
+        _selected = blocks.isEmpty ? null : blocks.first.id;
       }
     });
     _syncViewerEscape();
@@ -454,6 +461,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     });
     if (mounted && generation == _openGeneration) {
       setState(() => _opening = false);
+      _changed();
     }
   }
 
@@ -487,7 +495,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         _opened = null;
         _display = null;
       });
-      _syncViewerEscape();
+      _changed();
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _ensureSelectionVisible(),
       );
@@ -597,21 +605,25 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   Future<void> _clear({bool all = false}) async {
     if (_busy || _controller == null) return;
     if (_guardDelete(
-      _controller!.blocks.where((block) => all || !block.pinned),
+      _controller!.blocks.where(
+        (block) => all || (!block.pinned && !block.archived),
+      ),
     )) {
       return;
     }
     if (!await _confirm(
       all ? 'Удалить всё содержимое?' : 'Очистить незакреплённое?',
       all
-          ? 'Все импортированные файлы и блоки, включая закреплённые, будут удалены. Это действие нельзя отменить.'
-          : 'Незакреплённые блоки будут удалены. Закреплённые блоки и их исходные файлы останутся.',
+          ? 'Все импортированные файлы и блоки, включая закреплённые и архивные, будут удалены. Это действие нельзя отменить.'
+          : 'Незакреплённые блоки вне архива будут удалены. Закреплённые и архивные блоки и их исходные файлы останутся.',
     )) {
       return;
     }
     if (!mounted) return;
     if (_guardDelete(
-      _controller!.blocks.where((block) => all || !block.pinned),
+      _controller!.blocks.where(
+        (block) => all || (!block.pinned && !block.archived),
+      ),
     )) {
       return;
     }
@@ -626,7 +638,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     }
     if (!await _confirm(
       'Удалить импортированный файл?',
-      '«${file.filename}»: будут удалены все его блоки, в том числе закреплённые. Другие импорты не изменятся. Исходный файл на диске останется.',
+      '«${file.filename}»: будут удалены все его блоки, в том числе закреплённые и архивные. Другие импорты не изменятся. Исходный файл на диске останется.',
     )) {
       return;
     }
@@ -652,10 +664,19 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     _controller?.removeListener(_changed);
     _automation?.removeListener(_automationChanged);
     if (_automation != null) _automation!.onStartRequested = null;
+    if (_automation != null) {
+      _automation!.onArchived = null;
+      _automation!.onArchiveError = null;
+    }
     if (widget.automation == null) _automation?.dispose();
     if (widget.controller == null && _controller != null) {
       _controller!.dispose();
-      unawaited(_controller!.repository.close());
+      final repository = _controller!.repository;
+      unawaited(
+        (_automation?.flushArchive() ?? Future<void>.value()).then(
+          (_) => repository.close(),
+        ),
+      );
     }
     _focus.dispose();
     _scroll.dispose();
@@ -813,7 +834,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   );
 
   Widget _toolbar() => Padding(
-    padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+    padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
     child: Row(
       children: [
         _icon(
@@ -833,6 +854,12 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           'Импортированные файлы',
           () => _navigate(_View.settings, tab: _SettingsTab.files),
           selected: _view == _View.settings && _tab == _SettingsTab.files,
+        ),
+        _icon(
+          Icons.archive_outlined,
+          'Архив',
+          () => _navigate(_View.archive),
+          selected: _view == _View.archive,
         ),
         const Spacer(),
         if (_automation != null)
@@ -878,15 +905,25 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              Text(_view == _View.pinned ? 'Закреплённое' : 'Блоки'),
-              const Spacer(),
-              TextButton(
-                onPressed:
-                    _busy || !_controller!.blocks.any((block) => !block.pinned)
-                    ? null
-                    : () => _clear(),
-                child: const Text('Очистить'),
+              Text(
+                _view == _View.archive
+                    ? 'Архив'
+                    : _view == _View.pinned
+                    ? 'Закреплённое'
+                    : 'Блоки',
               ),
+              const Spacer(),
+              if (_view != _View.archive)
+                TextButton(
+                  onPressed:
+                      _busy ||
+                          !_controller!.blocks.any(
+                            (block) => !block.pinned && !block.archived,
+                          )
+                      ? null
+                      : () => _clear(),
+                  child: const Text('Очистить'),
+                ),
             ],
           ),
         ),
@@ -896,7 +933,9 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Text(
-                      _view == _View.pinned
+                      _view == _View.archive
+                          ? 'Архив пуст.'
+                          : _view == _View.pinned
                           ? 'Нет закреплённых блоков.'
                           : 'Добавьте файл .md или .txt\nс помощью кнопки +.',
                       textAlign: TextAlign.center,
@@ -947,6 +986,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           _copy(block);
         case BlockAction.pin:
           _run(() => _controller!.pin(block));
+        case BlockAction.archive:
+          _run(() => _controller!.setArchived(block.id, !block.archived));
         case BlockAction.delete:
           _deleteBlock(block);
         case BlockAction.type:
@@ -1142,7 +1183,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                         alwaysUse24HourFormat: true,
                       );
                   final blocks = _controller!.blocks.where(
-                    (block) => block.fileId == file.id,
+                    (block) => block.fileId == file.id && !block.archived,
                   );
                   return ExpansionTile(
                     key: PageStorageKey('file-${file.id}'),
@@ -1196,7 +1237,11 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         child: Column(
           children: [
             TextButton(
-              onPressed: _busy || _controller!.blocks.isEmpty
+              onPressed:
+                  _busy ||
+                      !_controller!.blocks.any(
+                        (block) => !block.pinned && !block.archived,
+                      )
                   ? null
                   : () => _clear(),
               child: const Text('Очистить незакреплённое'),

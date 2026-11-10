@@ -34,6 +34,7 @@ class BlockSummary {
       fileId = row['file_id'] as int,
       position = row['position'] as int,
       pinned = row['pinned'] == 1,
+      archived = row['archived'] == 1,
       title = row['title'] as String,
       description = row['description'] as String,
       preview = row['preview'] as String? ?? '';
@@ -42,6 +43,7 @@ class BlockSummary {
   final int fileId;
   final int position;
   final bool pinned;
+  final bool archived;
   final String title;
   final String description;
   final String preview;
