@@ -51,7 +51,8 @@ public static class HelperCaptureTest {
 
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 if (Get-Process helper -ErrorAction SilentlyContinue) { throw 'Exit Helper before running this test.' }
-$bindings = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV2' -ErrorAction SilentlyContinue
+$bindings = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV3' -ErrorAction SilentlyContinue
+if (-not $bindings) { $bindings = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV2' -ErrorAction SilentlyContinue }
 if (-not $bindings) { $bindings = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV1' -ErrorAction SilentlyContinue }
 if ($bindings -and ([BitConverter]::ToUInt32($bindings, 0) -ne 6 -or
     [BitConverter]::ToUInt32($bindings, 4) -ne 0x7b -or

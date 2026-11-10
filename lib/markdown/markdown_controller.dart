@@ -75,6 +75,8 @@ class MarkdownController extends ChangeNotifier {
   Future<void> deleteFile(int id) => _change(() => repository.deleteFile(id));
   Future<void> clearUnpinned() => _change(repository.clearUnpinned);
   Future<void> clearEverything() => _change(repository.clearEverything);
+  Future<void> resetApplicationData() =>
+      _change(repository.resetApplicationData);
   Future<void> setShowDescriptions(bool enabled) =>
       _change(() => repository.setShowDescriptions(enabled));
 

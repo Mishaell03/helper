@@ -16,10 +16,12 @@
 
 namespace {
 constexpr wchar_t kSettingsPath[] = L"Software\\Helper\\Hotkeys";
-constexpr wchar_t kSettingsValue[] = L"BindingsV2";
-constexpr std::array<const char*, 5> kActionNames = {"toggle", "exit", "start", "pause", "stop"};
-constexpr std::array<const char*, 5> kActionLabels = {
-    "Показать / скрыть", "Выход", "Начать ввод", "Пауза / продолжение", "Остановить ввод"};
+constexpr wchar_t kSettingsValue[] = L"BindingsV3";
+constexpr std::array<const char*, 8> kActionNames = {
+    "toggle", "exit", "start", "pause", "stop", "slotToggle", "slotPrevious", "slotNext"};
+constexpr std::array<const char*, 8> kActionLabels = {
+    "Показать / скрыть", "Выход", "Начать ввод", "Пауза / продолжение", "Остановить ввод",
+    "Режим навигации по блокам", "Предыдущий блок", "Следующий блок"};
 constexpr wchar_t kWindowPath[] = L"Software\\Helper\\Window";
 constexpr wchar_t kRunPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValue[] = L"Helper.Background";
@@ -27,7 +29,6 @@ constexpr int kMinWidth = 360;
 constexpr int kMinHeight = 300;
 constexpr int kMaxWidth = 1600;
 constexpr int kMaxHeight = 1200;
-constexpr UINT kSlotModifiers = MOD_CONTROL | MOD_SHIFT;
 constexpr int kSlotToggleId = 0x4801;
 constexpr int kSlotPreviousId = 0x4802;
 constexpr int kSlotNextId = 0x4803;
@@ -52,15 +53,22 @@ const std::string* MapString(const flutter::EncodableMap& map, const char* name)
 }
 }  // namespace
 
+std::array<BackgroundManager::Shortcut, BackgroundManager::kActionCount>
+BackgroundManager::DefaultShortcuts() {
+  return {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
+      {MOD_CONTROL | MOD_SHIFT, VK_F4}, {MOD_CONTROL | MOD_SHIFT, VK_F6},
+      {MOD_CONTROL | MOD_SHIFT, VK_F7}, {MOD_CONTROL | MOD_SHIFT, VK_F8},
+      {MOD_CONTROL | MOD_SHIFT, VK_F3}, {MOD_CONTROL | MOD_SHIFT, VK_LEFT},
+      {MOD_CONTROL | MOD_SHIFT, VK_RIGHT}}};
+}
+
 BackgroundManager::BackgroundManager(HWND window,
                                      flutter::BinaryMessenger* messenger,
                                      bool start_hidden)
     : window_(window), visibility_(start_hidden), start_hidden_(start_hidden) {
   ApplyStyles();
   TraceCapture("created", window_, hidden_, parking_.parked());
-  std::array<Shortcut, kActionCount> shortcuts = {{{MOD_CONTROL | MOD_SHIFT, VK_F12},
-      {MOD_CONTROL | MOD_SHIFT, VK_F4}, {MOD_CONTROL | MOD_SHIFT, VK_F6},
-      {MOD_CONTROL | MOD_SHIFT, VK_F7}, {MOD_CONTROL | MOD_SHIFT, VK_F8}}};
+  auto shortcuts = DefaultShortcuts();
   DWORD data[kActionCount * 2]{};
   DWORD size = sizeof(data);
   const LSTATUS read = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath,
@@ -74,18 +82,29 @@ BackgroundManager::BackgroundManager(HWND window,
   if (loaded) {
     shortcuts = saved;
   } else {
-    // Preserve the existing user's two shortcuts; never silently overwrite them
-    // when introducing the three automation actions.
-    DWORD legacy[4]{};
+    // Preserve all five V2 actions (or both V1 actions), even if a new default
+    // collides with an older user's binding. Report that collision at startup.
+    DWORD legacy[10]{};
     DWORD bytes = sizeof(legacy);
-    const LSTATUS old = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath, L"BindingsV1",
+    LSTATUS old = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath, L"BindingsV2",
         RRF_RT_REG_BINARY, nullptr, legacy, &bytes);
-    const bool legacy_valid = old == ERROR_SUCCESS && bytes == sizeof(legacy) &&
-        Valid({legacy[0], legacy[1]}) && Valid({legacy[2], legacy[3]}) &&
-        !(Shortcut{legacy[0], legacy[1]} == Shortcut{legacy[2], legacy[3]});
+    size_t count = 5;
+    if (old == ERROR_FILE_NOT_FOUND || old == ERROR_PATH_NOT_FOUND) {
+      count = 2;
+      bytes = 4 * sizeof(DWORD);
+      old = RegGetValueW(HKEY_CURRENT_USER, kSettingsPath, L"BindingsV1",
+          RRF_RT_REG_BINARY, nullptr, legacy, &bytes);
+    }
+    bool legacy_valid = old == ERROR_SUCCESS && bytes == count * 2 * sizeof(DWORD);
+    for (size_t i = 0; legacy_valid && i < count; ++i) {
+      legacy_valid = Valid({legacy[i * 2], legacy[i * 2 + 1]});
+      for (size_t j = 0; j < i; ++j) {
+        if (Shortcut{legacy[i * 2], legacy[i * 2 + 1]} ==
+            Shortcut{legacy[j * 2], legacy[j * 2 + 1]}) legacy_valid = false;
+      }
+    }
     if (legacy_valid) {
-      shortcuts[0] = {legacy[0], legacy[1]};
-      shortcuts[1] = {legacy[2], legacy[3]};
+      for (size_t i = 0; i < count; ++i) shortcuts[i] = {legacy[i * 2], legacy[i * 2 + 1]};
     }
     if ((read != ERROR_FILE_NOT_FOUND && read != ERROR_PATH_NOT_FOUND) ||
         (old != ERROR_SUCCESS && old != ERROR_FILE_NOT_FOUND && old != ERROR_PATH_NOT_FOUND) ||
@@ -98,6 +117,7 @@ BackgroundManager::BackgroundManager(HWND window,
   // Reconfiguration below remains transactional and preserves the old pair.
   for (size_t i = 0; i < bindings_.size(); ++i) {
     bindings_[i].shortcut = shortcuts[i];
+    if (i >= 5) continue; // Navigation is registered separately, only when allowed.
     bool duplicate = false;
     for (size_t j = 0; j < i; ++j) if (shortcuts[i] == shortcuts[j]) duplicate = true;
     if (duplicate) {
@@ -134,6 +154,11 @@ BackgroundManager::BackgroundManager(HWND window,
   });
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const auto& method = call.method_name();
+    if (resetting_data_ && (method == "saveSettings" || method == "setAutostart" ||
+        method == "setSlotNotificationEnabled" || method == "setRecording")) {
+      result->Error("storage_error", "Дождитесь завершения удаления данных приложения.");
+      return;
+    }
     if (method == "getSettings") {
       result->Success(State());
     } else if (method == "selectedBlockChanged") {
@@ -222,12 +247,12 @@ BackgroundManager::BackgroundManager(HWND window,
       for (size_t i = 2; i < shortcuts.size(); ++i) {
         const auto found = map->find(Value(kActionNames[i]));
         if (found != map->end() && !ReadShortcut(found->second, &shortcuts[i])) {
-          result->Error("invalid_hotkey", "Некорректное сочетание клавиш автоматического ввода.");
+          result->Error("invalid_hotkey", "Некорректное сочетание клавиш.");
           return;
         }
       }
       std::string error;
-      // Configurable existing actions take priority over the new fixed keys.
+      // Release conditional navigation keys while validating the entire new set.
       ReleaseSlotNavigation();
       if (slot_toggle_registered_) UnregisterHotKey(window_, kSlotToggleId);
       slot_toggle_registered_ = false;
@@ -240,6 +265,24 @@ BackgroundManager::BackgroundManager(HWND window,
         startup_error_.clear();
         result->Success(State());
       }
+    } else if (method == "setDataResetting") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      if (!enabled) {
+        result->Error("invalid_argument", "Ожидается состояние удаления данных.");
+        return;
+      }
+      resetting_data_ = *enabled;
+      if (resetting_data_) {
+        automation_->Stop();
+        slot_notification_->Dismiss();
+      }
+      UpdateSlotNavigation();
+      result->Success();
+    } else if (method == "resetApplicationSettings") {
+      std::string error;
+      if (!resetting_data_) result->Error("storage_error", "Удаление данных не подготовлено.");
+      else if (!ResetApplicationSettings(&error)) result->Error("storage_error", error);
+      else result->Success();
     } else if (method == "setRecording") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
       if (!enabled) {
@@ -377,9 +420,20 @@ bool BackgroundManager::DispatchControlHotkey(UINT key, UINT modifiers) const {
       return true;
     }
   }
-  if (slot_toggle_registered_ && key == VK_F3 && modifiers == kSlotModifiers) {
+  if (slot_toggle_registered_ && key == bindings_[5].shortcut.key &&
+      modifiers == bindings_[5].shortcut.modifiers) {
     PostMessage(window_, WM_HOTKEY, kSlotToggleId, MAKELPARAM(modifiers, key));
     return true;
+  }
+  if (slot_arrows_registered_) {
+    for (size_t i = 6; i < 8; ++i) {
+      const auto& shortcut = bindings_[i].shortcut;
+      if (key == shortcut.key && modifiers == shortcut.modifiers) {
+        PostMessage(window_, WM_HOTKEY, i == 6 ? kSlotPreviousId : kSlotNextId,
+                    MAKELPARAM(modifiers, key));
+        return true;
+      }
+    }
   }
   if (viewer_escape_registered_ && key == VK_ESCAPE && modifiers == 0) {
     PostMessage(window_, WM_HOTKEY, kViewerEscapeId, MAKELPARAM(0, VK_ESCAPE));
@@ -437,11 +491,13 @@ void BackgroundManager::DisableSlotNavigation() {
 
 void BackgroundManager::RegisterSlotToggle() {
   if (slot_toggle_registered_) return;
-  const bool configured = std::any_of(bindings_.begin(), bindings_.end(),
-      [](const Binding& b) { return b.shortcut == Shortcut{kSlotModifiers, VK_F3}; });
+  const auto shortcut = bindings_[5].shortcut;
+  const bool configured = std::any_of(bindings_.begin(), bindings_.begin() + 5,
+      [shortcut](const Binding& b) { return b.shortcut == shortcut; }) ||
+      shortcut == bindings_[6].shortcut || shortcut == bindings_[7].shortcut;
   if (configured || !RegisterHotKey(window_, kSlotToggleId,
-                                  kSlotModifiers | MOD_NOREPEAT, VK_F3)) {
-    slot_warnings_[0] = "Ctrl + Shift + F3 недоступно для переключения слотов: сочетание занято. ";
+                                   shortcut.modifiers | MOD_NOREPEAT, shortcut.key)) {
+    slot_warnings_[0] = "Сочетание режима навигации по блокам занято. Измените его в настройках клавиатуры. ";
     channel_->InvokeMethod("warning", std::make_unique<Value>(slot_warnings_[0]));
     return;
   }
@@ -453,21 +509,23 @@ void BackgroundManager::UpdateSlotNavigation() {
   const bool inserting = automation_ && automation_->blocks_slot_navigation();
   if (inserting) slot_navigation_.Disable();
   const bool enabled = slot_navigation_.enabled(SlotWindowVisible(), inserting) &&
-      !recording_ && !import_dialog_;
+      !recording_ && !resetting_data_ && !import_dialog_;
   if (!enabled) {
     ReleaseSlotNavigation();
     return;
   }
   if (slot_arrows_registered_) return;
-  const bool configured = std::any_of(bindings_.begin(), bindings_.end(),
-      [](const Binding& b) {
-        return b.shortcut == Shortcut{kSlotModifiers, VK_LEFT} ||
-            b.shortcut == Shortcut{kSlotModifiers, VK_RIGHT};
-      });
+  const auto previous = bindings_[6].shortcut;
+  const auto next = bindings_[7].shortcut;
+  const bool configured = previous == next ||
+      std::any_of(bindings_.begin(), bindings_.begin() + 6,
+          [previous, next](const Binding& b) {
+            return b.shortcut == previous || b.shortcut == next;
+          });
   if (!configured && RegisterHotKey(window_, kSlotPreviousId,
-                                   kSlotModifiers | MOD_NOREPEAT, VK_LEFT)) {
+                                    previous.modifiers | MOD_NOREPEAT, previous.key)) {
     if (RegisterHotKey(window_, kSlotNextId,
-                       kSlotModifiers | MOD_NOREPEAT, VK_RIGHT)) {
+                        next.modifiers | MOD_NOREPEAT, next.key)) {
       slot_arrows_registered_ = true;
       slot_warnings_[1].clear();
       return;
@@ -476,8 +534,8 @@ void BackgroundManager::UpdateSlotNavigation() {
     UnregisterHotKey(window_, kSlotPreviousId);
   }
   slot_navigation_.Disable();
-  slot_warnings_[1] = "Навигация по слотам отключена: Ctrl + Shift + стрелки заняты. "
-      "Освободите сочетания и повторите F3 или показ окна. ";
+  slot_warnings_[1] = "Навигация по слотам отключена: сочетания предыдущего/следующего блока заняты. "
+      "Измените их в настройках клавиатуры и включите режим навигации заново. ";
   channel_->InvokeMethod("warning", std::make_unique<Value>(slot_warnings_[1]));
 }
 
@@ -540,6 +598,13 @@ bool BackgroundManager::Apply(const std::array<Shortcut, kActionCount>& shortcut
     if (old.id && std::none_of(next.begin(), next.end(), [&old](const Binding& b) { return b.id == old.id; }))
       UnregisterHotKey(window_, old.id);
   }
+  // Navigation reservations above only validate availability transactionally.
+  // Restore them through their fixed IDs according to visibility/mode, never
+  // reserve previous/next globally while navigation is disabled.
+  for (size_t i = 5; i < next.size(); ++i) {
+    UnregisterHotKey(window_, next[i].id);
+    next[i].id = 0;
+  }
   bindings_ = next;
   return true;
 }
@@ -549,7 +614,7 @@ BackgroundManager::Value BackgroundManager::State() const {
     return Value(Map{{Value("modifiers"), Value(static_cast<int32_t>(shortcut.modifiers))},
                      {Value("key"), Value(static_cast<int32_t>(shortcut.key))}});
   };
-  Map state{{Value("active"), Value(std::all_of(bindings_.begin(), bindings_.end(),
+  Map state{{Value("active"), Value(std::all_of(bindings_.begin(), bindings_.begin() + 5,
                      [](const Binding& b) { return b.id != 0; }))},
                    {Value("autostart"), Value(autostart_)},
                    {Value("startHidden"), Value(start_hidden_)},
@@ -557,6 +622,32 @@ BackgroundManager::Value BackgroundManager::State() const {
                    {Value("warning"), Value(startup_error_ + slot_warnings_[0] + slot_warnings_[1] + slot_notification_->warning())}};
   for (size_t i = 0; i < bindings_.size(); ++i) state[Value(kActionNames[i])] = encode(bindings_[i].shortcut);
   return Value(state);
+}
+
+bool BackgroundManager::ResetApplicationSettings(std::string* error) {
+  ReleaseSlotNavigation();
+  if (slot_toggle_registered_) UnregisterHotKey(window_, kSlotToggleId);
+  slot_toggle_registered_ = false;
+  const bool applied = Apply(DefaultShortcuts(), false, error);
+  RegisterSlotToggle();
+  if (!applied || !SetAutostart(false, error)) return false;
+  // Delete only Helper-owned settings; never touch the user's other Run values.
+  for (const auto* path : {kSettingsPath, kWindowPath}) {
+    const LSTATUS status = RegDeleteTreeW(HKEY_CURRENT_USER, path);
+    if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND) {
+      *error = WinError("Не удалось полностью удалить настройки приложения", status);
+      return false;
+    }
+  }
+  slot_notification_.reset();
+  slot_notification_ = std::make_unique<SlotNotification>([this](const std::string& warning) {
+    channel_->InvokeMethod("warning", std::make_unique<Value>(warning));
+  });
+  start_hidden_ = false;
+  startup_error_.clear();
+  slot_warnings_[1].clear();
+  RestoreSize();
+  return true;
 }
 
 bool BackgroundManager::ApplyStyles() {
@@ -1103,7 +1194,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     return true;
   }
   if (wparam == kSlotToggleId && slot_toggle_registered_ &&
-      modifiers == kSlotModifiers && key == VK_F3) {
+      modifiers == bindings_[5].shortcut.modifiers && key == bindings_[5].shortcut.key) {
     if (recording_ && GetForegroundWindow() == window_) {
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
           {Value("modifiers"), Value(static_cast<int32_t>(modifiers))},
@@ -1115,12 +1206,12 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     return true;
   }
   if (wparam == kSlotPreviousId || wparam == kSlotNextId) {
-    const UINT expected = wparam == kSlotPreviousId ? VK_LEFT : VK_RIGHT;
-    if (slot_arrows_registered_ && modifiers == kSlotModifiers && key == expected &&
+    const auto expected = bindings_[wparam == kSlotPreviousId ? 6 : 7].shortcut;
+    if (slot_arrows_registered_ && modifiers == expected.modifiers && key == expected.key &&
         slot_navigation_.enabled(SlotWindowVisible(), automation_->blocks_slot_navigation()) &&
         !recording_ && !import_dialog_) {
       channel_->InvokeMethod("navigateSlot", std::make_unique<Value>(
-          static_cast<int32_t>(key == VK_LEFT ? -1 : 1)));
+          static_cast<int32_t>(wparam == kSlotPreviousId ? -1 : 1)));
     }
     return true;
   }
@@ -1140,7 +1231,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     } else if (i == 1) {
       PostMessage(window_, WM_APP + 43, 0, 0);
     } else if (i == 2) {
-      if (!import_dialog_) automation_->RequestStart();
+      if (!import_dialog_ && !resetting_data_) automation_->RequestStart();
     } else if (i == 3) {
       automation_->TogglePause();
     } else {

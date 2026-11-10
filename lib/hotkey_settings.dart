@@ -71,6 +71,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
         start: Hotkey.defaultStart,
         pause: Hotkey.defaultPause,
         stop: Hotkey.defaultStop,
+        slotToggle: Hotkey.defaultSlotToggle,
+        slotPrevious: Hotkey.defaultSlotPrevious,
+        slotNext: Hotkey.defaultSlotNext,
       );
       if (!mounted) return;
       setState(() {
@@ -105,6 +108,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
               start: keys[2],
               pause: keys[3],
               stop: keys[4],
+              slotToggle: keys[5],
+              slotPrevious: keys[6],
+              slotNext: keys[7],
             );
           },
         ),
@@ -203,7 +209,6 @@ class _HotkeySettingsState extends State<HotkeySettings> {
           ],
           if (!widget.embedded || widget.preferencesOnly) ...[
             if (!widget.preferencesOnly) const Divider(),
-            Text('Автозапуск', style: Theme.of(context).textTheme.titleMedium),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Запускать вместе с Windows'),
@@ -233,7 +238,9 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     );
     if (widget.embedded) {
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        padding: widget.preferencesOnly
+            ? EdgeInsets.zero
+            : const EdgeInsets.symmetric(horizontal: 12),
         child: widget.scrollable ? content : content.child!,
       );
     }

@@ -59,6 +59,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   bool _opening = false;
   int _openGeneration = 0;
   bool _installingUpdate = false;
+  bool _resettingData = false;
+  int _preferencesRevision = 0;
   String? _loadError;
   Timer? _notificationTimer;
   bool _pointerInside = false;
@@ -74,6 +76,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       _picking ||
       _opening ||
       _installingUpdate ||
+      _resettingData ||
       (_controller?.busy ?? false);
 
   @override
@@ -547,7 +550,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     final blocks = _blocks;
     if (blocks.isEmpty) return null;
     final index = blocks.indexWhere((block) => block.id == _selected);
-    final next = blocks[(index + delta).clamp(0, blocks.length - 1)];
+    final next =
+        blocks[index < 0
+            ? (delta < 0 ? blocks.length - 1 : 0)
+            : (index + delta) % blocks.length];
     setState(() => _updateSelection(next));
     return next;
   }
@@ -630,6 +636,66 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     await _run(all ? _controller!.clearEverything : _controller!.clearUnpinned);
   }
 
+  Future<void> _resetApplicationData() async {
+    if (_busy || _controller == null) return;
+    if (!await _confirm(
+      'Удалить все данные приложения?',
+      'Все импортированные файлы и блоки, включая закреплённые, архив и отметки ввода, будут удалены. '
+          'Настройки, скорость, горячие клавиши и позиция подсказки будут сброшены, автозапуск отключён. '
+          'Исходные файлы на диске останутся. Это действие нельзя отменить.',
+    )) {
+      return;
+    }
+    if (!mounted || _busy) return;
+    setState(() => _resettingData = true);
+    await _run(() async {
+      try {
+        if (isWindows) await BackgroundService.instance.setDataResetting(true);
+        await _automation?.stop();
+        if (_automation?.state.engaged == true ||
+            _automation?.failure != null) {
+          throw FormatException(
+            _automation?.failure ??
+                'Не удалось остановить автоматический ввод.',
+          );
+        }
+        await _automation?.flushPreferences();
+        await _automation?.flushArchive();
+        if (isWindows) {
+          await BackgroundService.instance.resetApplicationSettings();
+        }
+        await _controller!.resetApplicationData();
+        await _automation?.initialize();
+        if (_automation?.failure != null) {
+          throw FormatException(_automation!.failure!);
+        }
+        if (!mounted) return;
+        setState(() {
+          ++_preferencesRevision;
+          _opened = null;
+          _display = null;
+        });
+        _notify('Данные приложения удалены. Настройки сброшены.');
+      } catch (error) {
+        final message =
+            error is PlatformException || error is MissingPluginException
+            ? backgroundError(error)
+            : markdownError(error);
+        throw FormatException(
+          'Сброс не завершён. Часть данных или настроек могла быть удалена. $message',
+        );
+      } finally {
+        try {
+          if (isWindows) {
+            await BackgroundService.instance.setDataResetting(false);
+          }
+        } finally {
+          if (mounted) setState(() => _resettingData = false);
+        }
+      }
+    });
+  }
+
   Future<void> _deleteFile(ImportedFile file) async {
     if (_guardDelete(
       _controller!.blocks.where((block) => block.fileId == file.id),
@@ -703,6 +769,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                 if (_loading ||
                     (_picking && !_confirmingImport) ||
                     _opening ||
+                    _resettingData ||
                     (_controller?.busy ?? false))
                   const LinearProgressIndicator(minHeight: 1),
                 Expanded(
@@ -1273,45 +1340,51 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   );
 
   Widget _preferences() => ListView(
+    key: const Key('preferencesList'),
     padding: const EdgeInsets.symmetric(horizontal: 12),
     children: [
-      SwitchListTile(
-        dense: true,
-        title: const Text('Показывать описания'),
-        value: _controller!.showDescriptions,
-        onChanged: _busy
-            ? null
-            : (value) => _run(() => _controller!.setShowDescriptions(value)),
-      ),
-      if (_automation != null) TypingSpeedSettings(controller: _automation!),
-      if (isWindows) ...[
-        const HotkeySettings(
-          key: ValueKey('preferencesSection'),
-          embedded: true,
-          preferencesOnly: true,
-          scrollable: false,
+      if (_automation != null)
+        AbsorbPointer(
+          absorbing: _busy,
+          child: TypingSpeedSettings(controller: _automation!, enabled: !_busy),
         ),
+      const SizedBox(height: 12),
+      AbsorbPointer(
+        absorbing: _busy,
+        child: Column(
+          key: const Key('preferencesSwitches'),
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Показывать описания'),
+              value: _controller!.showDescriptions,
+              onChanged: _busy
+                  ? null
+                  : (value) =>
+                        _run(() => _controller!.setShowDescriptions(value)),
+            ),
+            if (isWindows)
+              HotkeySettings(
+                key: ValueKey('preferencesSection-$_preferencesRevision'),
+                embedded: true,
+                preferencesOnly: true,
+                scrollable: false,
+              ),
+          ],
+        ),
+      ),
+      if (isWindows) ...[
         UpdateSettings(enabled: !_busy, install: _installUpdate),
         TextButton.icon(
-          onPressed: _exitApplication,
+          onPressed: _busy ? null : _exitApplication,
           icon: const Icon(Icons.logout, size: 16),
           label: const Text('Выйти из приложения'),
         ),
       ],
-      const Padding(
-        padding: EdgeInsets.symmetric(vertical: 12),
-        child: Row(
-          children: [
-            Image(
-              image: AssetImage('assets/branding/logo.png'),
-              width: 48,
-              height: 48,
-              semanticLabel: 'Логотип Helper',
-            ),
-            SizedBox(width: 8),
-            Text('Helper', style: TextStyle(color: Colors.white60)),
-          ],
-        ),
+      const Divider(),
+      TextButton(
+        onPressed: _busy ? null : _resetApplicationData,
+        child: const Text('Удалить все данные приложения'),
       ),
     ],
   );

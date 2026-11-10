@@ -11,6 +11,9 @@ class Hotkey {
   static const defaultStart = Hotkey(6, 0x75);
   static const defaultPause = Hotkey(6, 0x76);
   static const defaultStop = Hotkey(6, 0x77);
+  static const defaultSlotToggle = Hotkey(6, 0x72);
+  static const defaultSlotPrevious = Hotkey(6, 0x25);
+  static const defaultSlotNext = Hotkey(6, 0x27);
   final int modifiers; // Win32 MOD_ALT=1, CONTROL=2, SHIFT=4, WIN=8.
   final int key; // Win32 virtual key, not a Flutter key ID.
 
@@ -144,7 +147,13 @@ enum HotkeyAction {
   exit('Полностью выйти из приложения', Hotkey.defaultExit),
   start('Начать автоматический ввод', Hotkey.defaultStart),
   pause('Пауза / продолжение ввода', Hotkey.defaultPause),
-  stop('Остановить ввод (аварийная остановка)', Hotkey.defaultStop);
+  stop('Остановить ввод (аварийная остановка)', Hotkey.defaultStop),
+  slotToggle(
+    'Включить / выключить навигацию по блокам',
+    Hotkey.defaultSlotToggle,
+  ),
+  slotPrevious('Предыдущий блок', Hotkey.defaultSlotPrevious),
+  slotNext('Следующий блок', Hotkey.defaultSlotNext);
 
   const HotkeyAction(this.label, this.defaultKey);
   final String label;
@@ -164,6 +173,15 @@ class BackgroundSettings {
       stop = map['stop'] == null
           ? Hotkey.defaultStop
           : Hotkey.fromMap(map['stop'] as Map<Object?, Object?>),
+      slotToggle = map['slotToggle'] == null
+          ? Hotkey.defaultSlotToggle
+          : Hotkey.fromMap(map['slotToggle'] as Map<Object?, Object?>),
+      slotPrevious = map['slotPrevious'] == null
+          ? Hotkey.defaultSlotPrevious
+          : Hotkey.fromMap(map['slotPrevious'] as Map<Object?, Object?>),
+      slotNext = map['slotNext'] == null
+          ? Hotkey.defaultSlotNext
+          : Hotkey.fromMap(map['slotNext'] as Map<Object?, Object?>),
       active = map['active'] as bool,
       warning = map['warning'] as String,
       autostart = map['autostart'] as bool,
@@ -175,12 +193,18 @@ class BackgroundSettings {
   final Hotkey start;
   final Hotkey pause;
   final Hotkey stop;
+  final Hotkey slotToggle;
+  final Hotkey slotPrevious;
+  final Hotkey slotNext;
   Hotkey hotkey(HotkeyAction action) => switch (action) {
     HotkeyAction.toggle => toggle,
     HotkeyAction.exit => exit,
     HotkeyAction.start => start,
     HotkeyAction.pause => pause,
     HotkeyAction.stop => stop,
+    HotkeyAction.slotToggle => slotToggle,
+    HotkeyAction.slotPrevious => slotPrevious,
+    HotkeyAction.slotNext => slotNext,
   };
   final bool active;
   final String warning;
@@ -226,8 +250,20 @@ class BackgroundService {
     Hotkey? start,
     Hotkey? pause,
     Hotkey? stop,
+    Hotkey? slotToggle,
+    Hotkey? slotPrevious,
+    Hotkey? slotNext,
   }) async {
-    final keys = [toggle, exit, ?start, ?pause, ?stop];
+    final keys = [
+      toggle,
+      exit,
+      ?start,
+      ?pause,
+      ?stop,
+      ?slotToggle,
+      ?slotPrevious,
+      ?slotNext,
+    ];
     if (keys.any((key) => key.modifiers == 0)) {
       throw const FormatException('Добавьте Ctrl, Alt, Shift или Win.');
     }
@@ -245,12 +281,19 @@ class BackgroundService {
         if (start != null) 'start': start.toMap(),
         if (pause != null) 'pause': pause.toMap(),
         if (stop != null) 'stop': stop.toMap(),
+        if (slotToggle != null) 'slotToggle': slotToggle.toMap(),
+        if (slotPrevious != null) 'slotPrevious': slotPrevious.toMap(),
+        if (slotNext != null) 'slotNext': slotNext.toMap(),
       }))!,
     );
   }
 
   Future<void> setRecording(bool enabled) =>
       _channel.invokeMethod<void>('setRecording', enabled);
+  Future<void> resetApplicationSettings() =>
+      _channel.invokeMethod<void>('resetApplicationSettings');
+  Future<void> setDataResetting(bool enabled) =>
+      _channel.invokeMethod<void>('setDataResetting', enabled);
   Future<void> setViewerEscapeEnabled(bool enabled) =>
       _channel.invokeMethod<void>('setViewerEscapeEnabled', enabled);
   Future<void> selectedBlockChanged(int? id, String name) =>

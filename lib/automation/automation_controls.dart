@@ -5,8 +5,13 @@ import 'text_automation.dart';
 import 'typing_speed.dart';
 
 class TypingSpeedSettings extends StatelessWidget {
-  const TypingSpeedSettings({super.key, required this.controller});
+  const TypingSpeedSettings({
+    super.key,
+    required this.controller,
+    this.enabled = true,
+  });
   final TextAutomationController controller;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -39,10 +44,12 @@ class TypingSpeedSettings extends StatelessWidget {
               label: '${controller.speed}',
               semanticFormatterCallback: (value) =>
                   '${value.round()} символов в минуту',
-              onChanged: controller.ready && !controller.commandPending
+              onChanged:
+                  enabled && controller.ready && !controller.commandPending
                   ? (value) => controller.previewSpeed(value.round())
                   : null,
-              onChangeEnd: controller.ready && !controller.commandPending
+              onChangeEnd:
+                  enabled && controller.ready && !controller.commandPending
                   ? (value) => controller.setSpeed(value.round())
                   : null,
             ),
@@ -63,7 +70,8 @@ class TypingSpeedSettings extends StatelessWidget {
                   minimumSize: const Size(0, 32),
                   textStyle: const TextStyle(fontSize: 12),
                 ),
-                onPressed: controller.ready && !controller.commandPending
+                onPressed:
+                    enabled && controller.ready && !controller.commandPending
                     ? () => controller.setSpeed(preset.$1)
                     : null,
                 child: Text(preset.$2),

@@ -15,6 +15,9 @@ void main() {
   var start = Hotkey.defaultStart;
   var pause = Hotkey.defaultPause;
   var stop = Hotkey.defaultStop;
+  var slotToggle = Hotkey.defaultSlotToggle;
+  var slotPrevious = Hotkey.defaultSlotPrevious;
+  var slotNext = Hotkey.defaultSlotNext;
   var autostart = false;
   var conflict = false;
   var autostartFailure = false;
@@ -31,6 +34,9 @@ void main() {
     'start': start.toMap(),
     'pause': pause.toMap(),
     'stop': stop.toMap(),
+    'slotToggle': slotToggle.toMap(),
+    'slotPrevious': slotPrevious.toMap(),
+    'slotNext': slotNext.toMap(),
     'active': true,
     'warning': '',
     'autostart': autostart,
@@ -44,6 +50,9 @@ void main() {
     start = Hotkey.defaultStart;
     pause = Hotkey.defaultPause;
     stop = Hotkey.defaultStop;
+    slotToggle = Hotkey.defaultSlotToggle;
+    slotPrevious = Hotkey.defaultSlotPrevious;
+    slotNext = Hotkey.defaultSlotNext;
     autostart = false;
     conflict = false;
     autostartFailure = false;
@@ -86,6 +95,21 @@ void main() {
               }
               if (args['stop'] != null) {
                 stop = Hotkey.fromMap(args['stop'] as Map<Object?, Object?>);
+              }
+              if (args['slotToggle'] != null) {
+                slotToggle = Hotkey.fromMap(
+                  args['slotToggle'] as Map<Object?, Object?>,
+                );
+              }
+              if (args['slotPrevious'] != null) {
+                slotPrevious = Hotkey.fromMap(
+                  args['slotPrevious'] as Map<Object?, Object?>,
+                );
+              }
+              if (args['slotNext'] != null) {
+                slotNext = Hotkey.fromMap(
+                  args['slotNext'] as Map<Object?, Object?>,
+                );
               }
               return state();
             case 'setSlotNotificationEnabled':
@@ -170,6 +194,95 @@ void main() {
     expect(Hotkey.defaultStart.label, 'Ctrl + Shift + F6');
     expect(Hotkey.defaultPause.label, 'Ctrl + Shift + F7');
     expect(Hotkey.defaultStop.label, 'Ctrl + Shift + F8');
+    expect(Hotkey.defaultSlotToggle.label, 'Ctrl + Shift + F3');
+    expect(Hotkey.defaultSlotPrevious.label, 'Ctrl + Shift + ←');
+    expect(Hotkey.defaultSlotNext.label, 'Ctrl + Shift + →');
+  });
+
+  test('Старый снимок настроек получает стандартные клавиши навигации', () {
+    final legacy = state()
+      ..remove('slotToggle')
+      ..remove('slotPrevious')
+      ..remove('slotNext');
+    final settings = BackgroundSettings.fromMap(legacy);
+    expect(settings.slotToggle.sameAs(Hotkey.defaultSlotToggle), isTrue);
+    expect(settings.slotPrevious.sameAs(Hotkey.defaultSlotPrevious), isTrue);
+    expect(settings.slotNext.sameAs(Hotkey.defaultSlotNext), isTrue);
+  });
+
+  test('Навигация не может дублировать клавиши ввода или друг друга', () async {
+    await expectLater(
+      BackgroundService.instance.save(
+        Hotkey.defaultToggle,
+        Hotkey.defaultExit,
+        start: Hotkey.defaultStart,
+        slotNext: Hotkey.defaultStart,
+      ),
+      throwsFormatException,
+    );
+    await expectLater(
+      BackgroundService.instance.save(
+        Hotkey.defaultToggle,
+        Hotkey.defaultExit,
+        slotPrevious: Hotkey.defaultSlotNext,
+        slotNext: Hotkey.defaultSlotNext,
+      ),
+      throwsFormatException,
+    );
+    expect(saves, 0);
+  });
+
+  testWidgets('Все три действия навигации переназначаются и перечитываются', (
+    tester,
+  ) async {
+    await open(tester);
+    const oldKeys = [
+      'Ctrl + Shift + F3',
+      'Ctrl + Shift + ←',
+      'Ctrl + Shift + →',
+    ];
+    const newKeys = [Hotkey(3, 0x78), Hotkey(3, 0x79), Hotkey(3, 0x7a)];
+    for (var i = 0; i < oldKeys.length; ++i) {
+      final button = find.text(oldKeys[i]);
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      ServicesBinding.instance.channelBuffers.push(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          MethodCall('recorded', newKeys[i].toMap()),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
+      conflict = i == 0;
+      if (conflict) {
+        await tester.tap(find.text('Сохранить'));
+        await tester.pumpAndSettle();
+        expect(find.text('Сочетание занято. Выберите другое.'), findsOneWidget);
+        expect(slotToggle.sameAs(Hotkey.defaultSlotToggle), isTrue);
+        conflict = false;
+      }
+      await tester.tap(find.text('Сохранить'));
+      await tester.pumpAndSettle();
+      expect(recording, isFalse);
+    }
+    expect(slotToggle.sameAs(newKeys[0]), isTrue);
+    expect(slotPrevious.sameAs(newKeys[1]), isTrue);
+    expect(slotNext.sameAs(newKeys[2]), isTrue);
+    expect(start.sameAs(Hotkey.defaultStart), isTrue);
+    await tester.pumpWidget(const SizedBox());
+    await open(tester);
+    for (final key in newKeys) {
+      expect(find.text(key.label), findsOneWidget);
+    }
+    final defaults = find.text('Восстановить настройки по умолчанию');
+    await tester.ensureVisible(defaults);
+    await tester.tap(defaults);
+    await tester.pumpAndSettle();
+    expect(slotToggle.sameAs(Hotkey.defaultSlotToggle), isTrue);
+    expect(slotPrevious.sameAs(Hotkey.defaultSlotPrevious), isTrue);
+    expect(slotNext.sameAs(Hotkey.defaultSlotNext), isTrue);
   });
 
   test(

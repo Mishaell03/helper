@@ -45,7 +45,9 @@ class BackgroundManager {
   };
   using Value = flutter::EncodableValue;
   using Map = flutter::EncodableMap;
-  static constexpr size_t kActionCount = 5;
+  static constexpr size_t kActionCount = 8;
+  static std::array<Shortcut, kActionCount> DefaultShortcuts();
+  bool ResetApplicationSettings(std::string* error);
   bool Apply(const std::array<Shortcut, kActionCount>& shortcuts, bool persist,
               std::string* error);
   bool ValidAll(const std::array<Shortcut, kActionCount>& shortcuts) const;
@@ -84,6 +86,7 @@ class BackgroundManager {
   HWND previous_foreground_ = nullptr;
   bool composition_ready_ = false;
   bool recording_ = false;
+  bool resetting_data_ = false;
   bool keyboard_activation_ = false;
   HWND keyboard_previous_foreground_ = nullptr;
   DWORD keyboard_previous_process_ = 0;

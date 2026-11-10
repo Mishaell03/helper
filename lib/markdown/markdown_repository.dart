@@ -206,6 +206,20 @@ class MarkdownRepository {
     await transaction.delete('imported_files');
   });
 
+  Future<void> resetApplicationData() async {
+    await _database.execute('PRAGMA secure_delete = ON');
+    await _database.transaction((transaction) async {
+      await transaction.delete('imported_files');
+      await transaction.delete('preferences');
+      await transaction.delete(
+        'sqlite_sequence',
+        where: 'name IN (?, ?)',
+        whereArgs: ['blocks', 'imported_files'],
+      );
+    });
+    await _database.execute('VACUUM');
+  }
+
   Future<void> _removeEmptyImports(Transaction transaction) =>
       transaction.execute('''DELETE FROM imported_files WHERE NOT EXISTS
         (SELECT 1 FROM blocks WHERE blocks.file_id = imported_files.id)''');

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/markdown/markdown_controller.dart';
 import 'package:helper/markdown/markdown_repository.dart';
+import 'package:helper/automation/typing_speed.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'support/markdown_fixture.dart';
@@ -22,6 +23,29 @@ void main() {
     await repository.close();
     await directory.delete(recursive: true);
   });
+
+  test(
+    'Сброс удаляет импорты, архив, отметки и настройки, включая после перезапуска',
+    () async {
+      await repository.importDocument(
+        document('данные.md', '# Блок\n\nСекретный текст'),
+      );
+      final id = (await repository.blocks()).single.id;
+      await repository.setPinned(id, true);
+      await repository.completeInsertion(id);
+      await repository.setShowDescriptions(false);
+      await repository.setTypingSpeed(TypingSpeed.max);
+      await repository.resetApplicationData();
+      await repository.close();
+      repository = await MarkdownRepository.open(databasePath: databasePath);
+      expect(await repository.blocks(), isEmpty);
+      expect(await repository.files(), isEmpty);
+      expect(await repository.showDescriptions(), isTrue);
+      expect(await repository.typingSpeed(), TypingSpeed.normal);
+      await repository.importDocument(document('новый.md', '# Новый\n\nТекст'));
+      expect((await repository.blocks()).single.id, 1);
+    },
+  );
 
   test(
     'Исходники, ID, метаданные, закрепление и настройки переживают перезапуск БД',

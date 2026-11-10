@@ -29,9 +29,10 @@ public static class TypingProbe {
 }
 '@
 
-$bindings = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV2' -ErrorAction SilentlyContinue
+$bindings = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV3' -ErrorAction SilentlyContinue
+if (-not $bindings) { $bindings = Get-ItemPropertyValue 'HKCU:\Software\Helper\Hotkeys' 'BindingsV2' -ErrorAction SilentlyContinue }
 if ($bindings) {
-    if ($bindings.Length -ne 40) { throw 'Unexpected hotkey data. Fix shortcuts in Helper first.' }
+    if ($bindings.Length -notin @(40, 64)) { throw 'Unexpected hotkey data. Fix shortcuts in Helper first.' }
     for ($i = 2; $i -lt 5; $i++) {
         if ([BitConverter]::ToUInt32($bindings, $i * 8) -ne 6 -or
             [BitConverter]::ToUInt32($bindings, $i * 8 + 4) -ne (0x75 + $i - 2)) {
