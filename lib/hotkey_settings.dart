@@ -27,6 +27,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       .toList();
   bool _busy = true;
   bool _autostart = false;
+  bool _slotNotificationEnabled = true;
   String? _message;
   int _messageRevision = 0;
 
@@ -50,6 +51,7 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       setState(() {
         _keys = HotkeyAction.values.map(settings.hotkey).toList();
         _autostart = settings.autostart;
+        _slotNotificationEnabled = settings.slotNotificationEnabled;
         _setMessage(settings.warning.isEmpty ? null : settings.warning);
       });
     } catch (error) {
@@ -147,6 +149,23 @@ class _HotkeySettingsState extends State<HotkeySettings> {
     }
   }
 
+  Future<void> _setSlotNotificationEnabled(bool enabled) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final settings = await _service.setSlotNotificationEnabled(enabled);
+      if (mounted) {
+        setState(
+          () => _slotNotificationEnabled = settings.slotNotificationEnabled,
+        );
+      }
+    } catch (error) {
+      if (mounted) setState(() => _setMessage(_error(error)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final content = SingleChildScrollView(
@@ -193,6 +212,12 @@ class _HotkeySettingsState extends State<HotkeySettings> {
               ),
               value: _autostart,
               onChanged: _busy ? null : _setAutostart,
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Показывать подсказку выбранного блока'),
+              value: _slotNotificationEnabled,
+              onChanged: _busy ? null : _setSlotNotificationEnabled,
             ),
           ],
           if (_message != null)

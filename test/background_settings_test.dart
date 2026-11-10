@@ -18,6 +18,8 @@ void main() {
   var autostart = false;
   var conflict = false;
   var autostartFailure = false;
+  var notificationEnabled = true;
+  var notificationFailure = false;
   var recording = false;
   var saves = 0;
   final visibilityCalls = <String>[];
@@ -33,6 +35,7 @@ void main() {
     'warning': '',
     'autostart': autostart,
     'startHidden': false,
+    'slotNotificationEnabled': notificationEnabled,
   };
 
   setUp(() {
@@ -44,6 +47,8 @@ void main() {
     autostart = false;
     conflict = false;
     autostartFailure = false;
+    notificationEnabled = true;
+    notificationFailure = false;
     recording = false;
     saves = 0;
     visibilityCalls.clear();
@@ -83,6 +88,15 @@ void main() {
                 stop = Hotkey.fromMap(args['stop'] as Map<Object?, Object?>);
               }
               return state();
+            case 'setSlotNotificationEnabled':
+              if (notificationFailure) {
+                throw PlatformException(
+                  code: 'storage_error',
+                  message: 'Ошибка сохранения подсказки.',
+                );
+              }
+              notificationEnabled = call.arguments as bool;
+              return state();
             case 'setAutostart':
               if (autostartFailure) {
                 throw PlatformException(
@@ -114,6 +128,40 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  Finder preference(String label) => find.widgetWithText(SwitchListTile, label);
+
+  test('Старые настройки включают подсказку по умолчанию', () {
+    final legacy = state()..remove('slotNotificationEnabled');
+    expect(BackgroundSettings.fromMap(legacy).slotNotificationEnabled, isTrue);
+  });
+
+  testWidgets(
+    'Подсказка сохраняется, перечитывается; ошибка не меняет переключатель',
+    (tester) async {
+      await open(tester);
+      final tile = preference('Показывать подсказку выбранного блока');
+      await tester.ensureVisible(tile);
+      expect(tester.widget<SwitchListTile>(tile).value, isTrue);
+      notificationFailure = true;
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(tile).value, isTrue);
+      expect(notificationEnabled, isTrue);
+      expect(find.text('Ошибка сохранения подсказки.'), findsOneWidget);
+      notificationFailure = false;
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(notificationEnabled, isFalse);
+      await tester.pumpWidget(const SizedBox());
+      await open(tester);
+      expect(tester.widget<SwitchListTile>(tile).value, isFalse);
+      await tester.ensureVisible(tile);
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(notificationEnabled, isTrue);
+    },
+  );
 
   test('Новые значения по умолчанию используют F12 и F4', () {
     expect(Hotkey.defaultToggle.label, 'Ctrl + Shift + F12');
@@ -264,24 +312,19 @@ void main() {
     'Автозапуск сохраняется через канал; при ошибке переключатель не меняется',
     (tester) async {
       await open(tester);
-      await tester.ensureVisible(find.byType(SwitchListTile));
+      final tile = preference('Запускать вместе с Windows');
+      await tester.ensureVisible(tile);
       autostartFailure = true;
-      await tester.tap(find.byType(Switch));
+      await tester.tap(tile);
       await tester.pumpAndSettle();
-      expect(
-        tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
-        isFalse,
-      );
+      expect(tester.widget<SwitchListTile>(tile).value, isFalse);
       expect(find.text('Не удалось включить автозапуск.'), findsOneWidget);
       autostartFailure = false;
-      await tester.tap(find.byType(Switch));
+      await tester.tap(tile);
       await tester.pumpAndSettle();
       expect(autostart, isTrue);
-      expect(
-        tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
-        isTrue,
-      );
-      await tester.tap(find.byType(Switch));
+      expect(tester.widget<SwitchListTile>(tile).value, isTrue);
+      await tester.tap(tile);
       await tester.pumpAndSettle();
       expect(autostart, isFalse);
     },

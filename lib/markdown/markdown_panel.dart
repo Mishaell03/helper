@@ -249,7 +249,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       if (_opened == null &&
           !_opening &&
           !blocks.any((block) => block.id == _selected)) {
-        _selected = blocks.isEmpty ? null : blocks.first.id;
+        _updateSelection(blocks.firstOrNull, notify: !_loading);
       }
     });
     _syncViewerEscape();
@@ -412,7 +412,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     if (_busy || _controller == null) return;
     final generation = ++_openGeneration;
     setState(() {
-      _selected = block.id;
+      _updateSelection(block);
       _opening = true;
     });
     _reportBlockStage(1, block.id);
@@ -548,7 +548,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     if (blocks.isEmpty) return null;
     final index = blocks.indexWhere((block) => block.id == _selected);
     final next = blocks[(index + delta).clamp(0, blocks.length - 1)];
-    setState(() => _selected = next.id);
+    setState(() => _updateSelection(next));
     return next;
   }
 
@@ -961,8 +961,22 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   void _selectSlot(BlockSummary block) {
     if (_busy) return;
-    setState(() => _selected = block.id);
+    setState(() => _updateSelection(block));
     _focus.requestFocus();
+  }
+
+  void _updateSelection(BlockSummary? block, {bool notify = true}) {
+    if (_selected == block?.id) return;
+    _selected = block?.id;
+    if (notify && isWindows) {
+      unawaited(
+        BackgroundService.instance
+            .selectedBlockChanged(block?.id, block?.title ?? '')
+            .catchError((Object error) {
+              if (mounted) _notify(backgroundError(error));
+            }),
+      );
+    }
   }
 
   Widget _card(BlockSummary block) => BlockCard(

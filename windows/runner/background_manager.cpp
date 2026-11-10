@@ -129,10 +129,29 @@ BackgroundManager::BackgroundManager(HWND window,
 
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/background", &flutter::StandardMethodCodec::GetInstance());
+  slot_notification_ = std::make_unique<SlotNotification>([this](const std::string& warning) {
+    channel_->InvokeMethod("warning", std::make_unique<Value>(warning));
+  });
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const auto& method = call.method_name();
     if (method == "getSettings") {
       result->Success(State());
+    } else if (method == "selectedBlockChanged") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      if (!args) {
+        result->Error("invalid_argument", "Не указан выбранный блок.");
+        return;
+      }
+      const auto* name = MapString(*args, "name");
+      slot_notification_->SelectionChanged(MapInteger(*args, "id"),
+          name ? Utf16FromUtf8(*name) : std::wstring{}, SlotWindowVisible());
+      result->Success();
+    } else if (method == "setSlotNotificationEnabled") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      std::string error;
+      if (!enabled) result->Error("invalid_argument", "Ожидается настройка подсказки блока.");
+      else if (!slot_notification_->SetEnabled(*enabled, &error)) result->Error("storage_error", error);
+      else result->Success(State());
     } else if (method == "heartbeat") {
       if (watchdog_) watchdog_->DartPulse();
       result->Success();
@@ -298,6 +317,7 @@ BackgroundManager::BackgroundManager(HWND window,
 }
 
 BackgroundManager::~BackgroundManager() {
+  slot_notification_.reset();
   if (update_process_) CloseHandle(update_process_); // Do not kill committed updater.
   watchdog_.reset();
   task_view_guard_.reset();
@@ -533,7 +553,8 @@ BackgroundManager::Value BackgroundManager::State() const {
                      [](const Binding& b) { return b.id != 0; }))},
                    {Value("autostart"), Value(autostart_)},
                    {Value("startHidden"), Value(start_hidden_)},
-                   {Value("warning"), Value(startup_error_ + slot_warnings_[0] + slot_warnings_[1])}};
+                   {Value("slotNotificationEnabled"), Value(slot_notification_->enabled())},
+                   {Value("warning"), Value(startup_error_ + slot_warnings_[0] + slot_warnings_[1] + slot_notification_->warning())}};
   for (size_t i = 0; i < bindings_.size(); ++i) state[Value(kActionNames[i])] = encode(bindings_[i].shortcut);
   return Value(state);
 }
@@ -645,6 +666,7 @@ bool BackgroundManager::PreparePresentation() {
 }
 
 void BackgroundManager::HideForTaskView() {
+  slot_notification_->Dismiss();
   TraceCapture("task_view.hide", window_, hidden_, parking_.parked());
   automation_->Pause("Открыт обзор задач Windows. Ввод приостановлен, позиция сохранена.");
   // Keep the keyboard hook short: no registry writes before the shell snapshot.
@@ -711,6 +733,7 @@ bool BackgroundManager::ShowWindowSafely() {
     startup_error_ = "Интерфейс ещё не отвечает. Панель остаётся скрытой; попробуйте показать её позже.";
     return false;
   }
+  slot_notification_->Dismiss();
   visibility_.Reveal();
   if (!parking_.Restore(window_)) {
     TraceCapture("show.restore_failed", window_, hidden_, parking_.parked(), GetLastError());
@@ -950,6 +973,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     ReleaseSlotNavigation();
     ReleaseViewerEscape();
   } else if ((message == WM_SIZE || message == WM_SHOWWINDOW) && SlotWindowVisible()) {
+    if (slot_notification_) slot_notification_->Dismiss();
     UpdateSlotNavigation();
     UpdateViewerEscape();
   }

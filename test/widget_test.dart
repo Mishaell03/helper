@@ -22,6 +22,7 @@ void main() {
   String? clipboard;
   var automationStarts = 0;
   final viewerEscapeRequests = <bool>[];
+  final selectionNotifications = <Map<Object?, Object?>>[];
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('helper_ui_');
@@ -32,6 +33,7 @@ void main() {
     clipboard = null;
     automationStarts = 0;
     viewerEscapeRequests.clear();
+    selectionNotifications.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
           if (call.method == 'Clipboard.setData') {
@@ -59,6 +61,9 @@ void main() {
         .setMockMethodCallHandler(const MethodChannel('helper/background'), (
           call,
         ) async {
+          if (call.method == 'selectedBlockChanged') {
+            selectionNotifications.add(call.arguments as Map<Object?, Object?>);
+          }
           if (call.method == 'setViewerEscapeEnabled') {
             viewerEscapeRequests.add(call.arguments as bool);
           }
@@ -152,6 +157,38 @@ void main() {
       .singleWhere((card) => card.selected)
       .block
       .id;
+
+  testWidgets(
+    'Канал подсказки: реальный ID, без запуска, перестроения и повторного выбора',
+    (tester) async {
+      final input = await file(
+        tester,
+        'slots.md',
+        '# Один\n\nТекст\n---\n# Два 😀\n\nЕщё',
+      );
+      await tester.runAsync(() => controller.importPaths([input.path]));
+      await open(tester);
+      expect(selectionNotifications, isEmpty);
+      final ids = controller.blocks.map((block) => block.id).toList();
+      await tester.tap(find.text('Один'));
+      await tester.pumpAndSettle();
+      expect(selectionNotifications, isEmpty);
+      await navigateSlot(tester, 1);
+      expect(selectionNotifications, [
+        {'id': ids[1], 'name': 'Два 😀'},
+      ]);
+      await tester.tap(find.text('Два 😀'));
+      await tester.pumpAndSettle();
+      expect(selectionNotifications, hasLength(1));
+      await tester.runAsync(controller.load);
+      await settle(tester);
+      expect(selectionNotifications, hasLength(1));
+      await navigateSlot(tester, -1);
+      expect(selectionNotifications.last, {'id': ids[0], 'name': 'Один'});
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
 
   testWidgets(
     'Ручной архив, независимое закрепление, восстановление и навигация слотов',

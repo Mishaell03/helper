@@ -167,7 +167,8 @@ class BackgroundSettings {
       active = map['active'] as bool,
       warning = map['warning'] as String,
       autostart = map['autostart'] as bool,
-      startHidden = map['startHidden'] as bool;
+      startHidden = map['startHidden'] as bool,
+      slotNotificationEnabled = map['slotNotificationEnabled'] as bool? ?? true;
 
   final Hotkey toggle;
   final Hotkey exit;
@@ -185,6 +186,7 @@ class BackgroundSettings {
   final String warning;
   final bool autostart;
   final bool startHidden;
+  final bool slotNotificationEnabled;
 }
 
 class BackgroundService {
@@ -251,6 +253,18 @@ class BackgroundService {
       _channel.invokeMethod<void>('setRecording', enabled);
   Future<void> setViewerEscapeEnabled(bool enabled) =>
       _channel.invokeMethod<void>('setViewerEscapeEnabled', enabled);
+  Future<void> selectedBlockChanged(int? id, String name) =>
+      _channel.invokeMethod<void>('selectedBlockChanged', {
+        'id': id ?? 0,
+        'name': name,
+      });
+  Future<BackgroundSettings> setSlotNotificationEnabled(bool enabled) async =>
+      BackgroundSettings.fromMap(
+        (await _channel.invokeMapMethod<Object?, Object?>(
+          'setSlotNotificationEnabled',
+          enabled,
+        ))!,
+      );
   Future<BackgroundSettings> prepareWindow() async =>
       BackgroundSettings.fromMap(
         (await _channel.invokeMapMethod<Object?, Object?>('prepareWindow'))!,

@@ -17,6 +17,7 @@
 #include "task_view_guard.h"
 #include "window_watchdog.h"
 #include "slot_navigation_policy.h"
+#include "slot_notification.h"
 
 // Also used by a second launch to reveal the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
@@ -102,6 +103,7 @@ class BackgroundManager {
   std::string startup_error_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;
   std::unique_ptr<TextAutomation> automation_;
+  std::unique_ptr<SlotNotification> slot_notification_;
   std::unique_ptr<TaskViewGuard> task_view_guard_;
   std::unique_ptr<WindowWatchdog> watchdog_;
   bool in_move_size_loop_ = false;
