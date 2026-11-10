@@ -196,6 +196,11 @@ class BackgroundService {
         );
       } else if (call.method == 'warning') {
         onWarning?.call(call.arguments as String);
+      } else if (call.method == 'navigateSlot') {
+        final delta = call.arguments;
+        if (delta is int && (delta == -1 || delta == 1)) {
+          onNavigateSlot?.call(delta);
+        }
       }
     });
   }
@@ -204,6 +209,7 @@ class BackgroundService {
   static const _channel = MethodChannel('helper/background');
   void Function(Hotkey)? onRecorded;
   void Function(String)? onWarning;
+  void Function(int)? onNavigateSlot;
 
   Future<BackgroundSettings> getSettings() async => BackgroundSettings.fromMap(
     (await _channel.invokeMapMethod<Object?, Object?>('getSettings'))!,

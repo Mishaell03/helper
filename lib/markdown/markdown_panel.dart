@@ -73,7 +73,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   @override
   void initState() {
     super.initState();
-    if (isWindows) BackgroundService.instance.onWarning = _notify;
+    if (isWindows) {
+      BackgroundService.instance.onWarning = _notify;
+      BackgroundService.instance.onNavigateSlot = _navigateSlot;
+    }
     _initialize();
     if (isWindows) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkHotkeys());
@@ -344,7 +347,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     }
   }
 
-  Future<void> _open(BlockSummary block) async {
+  Future<void> _open(BlockSummary block, {bool requestFocus = true}) async {
     if (_busy || _controller == null) return;
     final generation = ++_openGeneration;
     setState(() {
@@ -386,7 +389,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             _reportBlockStage(4, block.id);
           }
         });
-        _focus.requestFocus();
+        if (requestFocus) _focus.requestFocus();
       } catch (_) {
         if (mounted && generation == _openGeneration) {
           _reportBlockStage(5, block.id);
@@ -456,8 +459,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
         event.logicalKey == LogicalKeyboardKey.arrowUp) {
       final delta = event.logicalKey == LogicalKeyboardKey.arrowDown ? 1 : -1;
-      final next = (index + delta).clamp(0, blocks.length - 1);
-      setState(() => _selected = blocks[next].id);
+      _selectRelative(delta);
       _focus.requestFocus();
       _ensureSelectionVisible();
       return KeyEventResult.handled;
@@ -474,6 +476,26 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
+  }
+
+  BlockSummary? _selectRelative(int delta) {
+    final blocks = _blocks;
+    if (blocks.isEmpty) return null;
+    final index = blocks.indexWhere((block) => block.id == _selected);
+    final next = blocks[(index + delta).clamp(0, blocks.length - 1)];
+    setState(() => _selected = next.id);
+    return next;
+  }
+
+  void _navigateSlot(int delta) {
+    if (!mounted || _busy || ModalRoute.of(context)?.isCurrent != true) return;
+    final next = _selectRelative(delta);
+    if (next == null) return;
+    if (_opened != null) {
+      if (_opened!.id != next.id) unawaited(_open(next, requestFocus: false));
+    } else if (_view != _View.settings) {
+      _ensureSelectionVisible();
+    }
   }
 
   void _ensureSelectionVisible() {
@@ -557,7 +579,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   @override
   void dispose() {
     ++_openGeneration;
-    if (isWindows) BackgroundService.instance.onWarning = null;
+    if (isWindows) {
+      BackgroundService.instance.onWarning = null;
+      BackgroundService.instance.onNavigateSlot = null;
+    }
     _controller?.removeListener(_changed);
     _automation?.removeListener(_automationChanged);
     if (_automation != null) _automation!.onStartRequested = null;

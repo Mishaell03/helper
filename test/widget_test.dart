@@ -8,6 +8,7 @@ import 'package:helper/background_service.dart';
 import 'package:helper/main.dart';
 import 'package:helper/panel_theme.dart';
 import 'package:helper/markdown/markdown_controller.dart';
+import 'package:helper/markdown/block_card.dart';
 import 'package:helper/markdown/markdown_repository.dart';
 
 void main() {
@@ -16,6 +17,7 @@ void main() {
   late MarkdownRepository repository;
   late MarkdownController controller;
   String? clipboard;
+  var automationStarts = 0;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('helper_ui_');
@@ -24,6 +26,7 @@ void main() {
     );
     controller = MarkdownController(repository);
     clipboard = null;
+    automationStarts = 0;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
           if (call.method == 'Clipboard.setData') {
@@ -36,6 +39,7 @@ void main() {
         .setMockMethodCallHandler(const MethodChannel('helper/automation'), (
           call,
         ) async {
+          if (call.method == 'start') automationStarts++;
           if (const ['getState', 'setSpeed', 'stop'].contains(call.method)) {
             return {
               'phase': 'idle',
@@ -129,6 +133,97 @@ void main() {
       await tester.pumpAndSettle();
     }
   }
+
+  Future<void> navigateSlot(WidgetTester tester, int delta) async {
+    BackgroundService.instance.onNavigateSlot!(delta);
+    await settle(tester);
+  }
+
+  int selectedSlot(WidgetTester tester) => tester
+      .widgetList<BlockCard>(find.byType(BlockCard))
+      .singleWhere((card) => card.selected)
+      .block
+      .id;
+
+  testWidgets(
+    'Глобальная навигация выбирает и открывает слоты без фокуса и запуска ввода',
+    (tester) async {
+      final input = await file(
+        tester,
+        'slots.txt',
+        '# Один\n\nПервый\n---\n# Два\n\nВторой\n---\n# Три\n\nТретий\n',
+      );
+      await open(tester, paths: [input.path]);
+      await navigateSlot(tester, 1); // Empty list.
+      await importFiles(tester);
+      final ids = controller.blocks.map((block) => block.id).toList();
+      await navigateSlot(tester, -1);
+      expect(selectedSlot(tester), ids.first);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      final focus = FocusManager.instance.primaryFocus;
+      await navigateSlot(tester, 1);
+      expect(selectedSlot(tester), ids[1]);
+      expect(FocusManager.instance.primaryFocus, same(focus));
+      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.pumpAndSettle();
+      await navigateSlot(tester, 1); // Do not change selection behind a modal.
+      await tester.tap(find.text('Отмена'));
+      await settle(tester);
+      expect(selectedSlot(tester), ids[1]);
+      await tester.tap(find.text('Два'));
+      await settle(tester);
+      await navigateSlot(tester, 1);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        '\nТретий\n',
+      );
+      await navigateSlot(tester, 1); // Clamp, do not wrap.
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        '\nТретий\n',
+      );
+      await navigateSlot(tester, -1);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('fullBlockContent'))).data,
+        '\nВторой\n',
+      );
+      expect(automationStarts, 0);
+      await tester.pumpWidget(const SizedBox());
+      expect(BackgroundService.instance.onNavigateSlot, isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
+    'Глобальная навигация сохраняет порядок и фильтр закреплённых слотов',
+    (tester) async {
+      final input = await file(
+        tester,
+        'pinned-slots.txt',
+        '# Один\n\nПервый\n---\n# Два\n\nВторой\n---\n# Три\n\nТретий\n',
+      );
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      final first = controller.blocks.first;
+      final last = controller.blocks.last;
+      await tester.tap(find.byTooltip('Закрепить').first);
+      await settle(tester);
+      await tester.tap(find.byTooltip('Закрепить').last);
+      await settle(tester);
+      await tester.tap(find.byTooltip('Закреплённые'));
+      await settle(tester);
+      await navigateSlot(tester, 1);
+      expect(selectedSlot(tester), last.id);
+      await navigateSlot(tester, 1);
+      expect(selectedSlot(tester), last.id);
+      await navigateSlot(tester, -1);
+      expect(selectedSlot(tester), first.id);
+      expect(automationStarts, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
 
   testWidgets('Пустая прозрачная панель без названия приложения', (
     tester,

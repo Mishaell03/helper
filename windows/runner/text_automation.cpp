@@ -67,11 +67,13 @@ TextAutomation::TextAutomation(HWND window, flutter::BinaryMessenger* messenger,
     std::function<bool(UINT, UINT)> dispatch_control_hotkey,
     std::function<bool()> has_emergency_stop,
     std::function<bool()> show_countdown,
-    std::function<void(UINT, bool)> task_view_requested)
+    std::function<void(UINT, bool)> task_view_requested,
+    std::function<void()> release_slot_navigation)
     : window_(window), dispatch_control_hotkey_(std::move(dispatch_control_hotkey)),
       has_emergency_stop_(std::move(has_emergency_stop)),
       show_countdown_(std::move(show_countdown)),
-      task_view_requested_(std::move(task_view_requested)) {
+      task_view_requested_(std::move(task_view_requested)),
+      release_slot_navigation_(std::move(release_slot_navigation)) {
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/automation", &flutter::StandardMethodCodec::GetInstance());
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
@@ -201,6 +203,7 @@ bool TextAutomation::Start(const Map& args, std::string* error) {
 }
 
 void TextAutomation::RequestStart() {
+  release_slot_navigation_();
   if (phase_ == Phase::typing || phase_ == Phase::countdown || phase_ == Phase::paused) return;
   channel_->InvokeMethod("startRequested", nullptr);
 }
@@ -236,6 +239,7 @@ void TextAutomation::TogglePause() {
 }
 
 void TextAutomation::BeginCountdown(bool resume, int seconds) {
+  release_slot_navigation_();
   KillTimer(window_, kTimer);
   RemoveObservers();
   resuming_ = resume;
@@ -275,6 +279,7 @@ void TextAutomation::CancelCountdown() {
 }
 
 void TextAutomation::Stop(bool notify) {
+  release_slot_navigation_();
   ++stop_generation_;
   KillTimer(window_, kTimer);
   RemoveObservers();
@@ -390,7 +395,27 @@ LRESULT CALLBACK TextAutomation::KeyboardHook(int code, WPARAM wparam, LPARAM lp
         if (held(VK_SHIFT, VK_LSHIFT, VK_RSHIFT)) modifiers |= MOD_SHIFT;
         if (held(VK_MENU, VK_LMENU, VK_RMENU)) modifiers |= MOD_ALT;
         if (self->physical_keys_[VK_LWIN] || self->physical_keys_[VK_RWIN]) modifiers |= MOD_WIN;
-        self->dispatch_control_hotkey_(vk, modifiers);
+        if (self->dispatch_control_hotkey_(vk, modifiers)) return 1;
+      }
+      // These modifiers must reach Windows so the released slot shortcuts work
+      // in the editor. ModifiersHeld still prevents Unicode injection meanwhile.
+      const bool slot_modifier = vk == VK_CONTROL || vk == VK_LCONTROL ||
+          vk == VK_RCONTROL || vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
+      const bool slot_arrow = (vk == VK_LEFT || vk == VK_RIGHT) &&
+          (self->physical_keys_[VK_LCONTROL] || self->physical_keys_[VK_RCONTROL]) &&
+          (self->physical_keys_[VK_LSHIFT] || self->physical_keys_[VK_RSHIFT]) &&
+          !self->physical_keys_[VK_MENU] && !self->physical_keys_[VK_LMENU] &&
+          !self->physical_keys_[VK_RMENU] && !win &&
+          (!was_down || self->release_passthrough_[vk]);
+      if (down && slot_arrow) {
+        // Like mouse editing, moving/selecting text must pause before the next
+        // Unicode packet can replace the editor's newly selected text.
+        self->Pause("Использована Ctrl + Shift + стрелка. Ввод приостановлен.");
+        return CallNextHookEx(nullptr, code, wparam, lparam);
+      }
+      if (down && slot_modifier) {
+        self->release_passthrough_[vk] = true;
+        return CallNextHookEx(nullptr, code, wparam, lparam);
       }
       // Let Windows release keys that were already down before the hook was
       // installed. Otherwise a modifier could remain logically stuck.
@@ -399,7 +424,7 @@ LRESULT CALLBACK TextAutomation::KeyboardHook(int code, WPARAM wparam, LPARAM lp
         return CallNextHookEx(nullptr, code, wparam, lparam);
       }
     }
-    return 1;  // Only our marked SendInput events pass during automation.
+    return 1;  // Other manual keys remain suppressed during automation.
   }
   return CallNextHookEx(nullptr, code, wparam, lparam);
 }

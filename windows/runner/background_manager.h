@@ -16,6 +16,7 @@
 #include "capture_window_parking.h"
 #include "task_view_guard.h"
 #include "window_watchdog.h"
+#include "slot_navigation_policy.h"
 
 // Also used by a second launch to reveal the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
@@ -48,6 +49,11 @@ class BackgroundManager {
               std::string* error);
   bool ValidAll(const std::array<Shortcut, kActionCount>& shortcuts) const;
   bool DispatchControlHotkey(UINT key, UINT modifiers) const;
+  bool SlotWindowVisible() const;
+  void UpdateSlotNavigation();
+  void DisableSlotNavigation();
+  void ReleaseSlotNavigation();
+  void RegisterSlotToggle();
   bool ReadShortcut(const Value& value, Shortcut* shortcut);
   bool Valid(const Shortcut& shortcut) const;
   Value State() const;
@@ -84,6 +90,10 @@ class BackgroundManager {
   bool exit_requested_ = false;
   Microsoft::WRL::ComPtr<IFileOpenDialog> import_dialog_;
   std::array<Binding, kActionCount> bindings_{};
+  SlotNavigationPolicy slot_navigation_;
+  bool slot_arrows_registered_ = false;
+  bool slot_toggle_registered_ = false;
+  std::array<std::string, 2> slot_warnings_{};
   std::string startup_error_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;
   std::unique_ptr<TextAutomation> automation_;

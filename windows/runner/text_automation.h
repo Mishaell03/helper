@@ -21,13 +21,17 @@ class TextAutomation {
                  std::function<bool(UINT, UINT)> dispatch_control_hotkey,
                  std::function<bool()> has_emergency_stop,
                  std::function<bool()> show_countdown,
-                 std::function<void(UINT, bool)> task_view_requested);
+                 std::function<void(UINT, bool)> task_view_requested,
+                 std::function<void()> release_slot_navigation);
   ~TextAutomation();
   bool HandleMessage(UINT message, WPARAM wparam);
   void RequestStart();
   void TogglePause();
   void Pause(const std::string& reason = "Ввод приостановлен.");
   void Stop(bool notify = true);
+  bool blocks_slot_navigation() const {
+    return phase_ == Phase::countdown || phase_ == Phase::typing || phase_ == Phase::paused;
+  }
 
  private:
   using Value = flutter::EncodableValue;
@@ -65,6 +69,7 @@ class TextAutomation {
   std::function<bool()> has_emergency_stop_;
   std::function<bool()> show_countdown_;
   std::function<void(UINT, bool)> task_view_requested_;
+  std::function<void()> release_slot_navigation_;
   std::unique_ptr<flutter::MethodChannel<Value>> channel_;
   Phase phase_ = Phase::idle;
   std::wstring text_;
