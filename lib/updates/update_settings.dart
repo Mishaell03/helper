@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_updater.dart';
+import '../transient_message.dart';
 
 class UpdateSettings extends StatefulWidget {
   const UpdateSettings({
@@ -21,9 +22,11 @@ class _UpdateSettingsState extends State<UpdateSettings> {
   late final _updater = widget.updater ?? AppUpdater();
   bool _busy = false;
   String _status = 'Проверка GitHub выполняется только по нажатию кнопки.';
+  int _statusRevision = 0;
 
   Future<void> _check() async {
     setState(() {
+      ++_statusRevision;
       _busy = true;
       _status = 'Проверка GitHub…';
     });
@@ -99,9 +102,13 @@ class _UpdateSettingsState extends State<UpdateSettings> {
         icon: const Icon(Icons.system_update_alt, size: 16),
         label: Text(_busy ? 'Обновление…' : 'Проверить обновления'),
       ),
-      Text(
-        _status,
-        style: const TextStyle(color: Colors.white60, fontSize: 11),
+      TransientMessage(
+        identity: (_status, _busy, _statusRevision),
+        persistent: _busy,
+        child: Text(
+          _status,
+          style: const TextStyle(color: Colors.white60, fontSize: 11),
+        ),
       ),
       if (!widget.enabled && !_busy)
         const Text(

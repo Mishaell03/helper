@@ -8,11 +8,13 @@ import '../background_service.dart';
 import '../hotkey_settings.dart';
 import '../platform.dart';
 import '../panel_theme.dart';
+import '../transient_message.dart';
 import '../window_resize_border.dart';
 import '../automation/text_automation.dart';
 import '../automation/automation_controls.dart';
 import '../updates/update_settings.dart';
 import 'block_card.dart';
+import 'block_tap_region.dart';
 import 'markdown_controller.dart';
 import 'markdown_repository.dart';
 import 'models.dart';
@@ -58,6 +60,9 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   int _openGeneration = 0;
   bool _installingUpdate = false;
   String? _loadError;
+  Timer? _notificationTimer;
+  bool _pointerInside = false;
+  bool? _viewerEscapeEnabled;
   static const _cardExtent = BlockCard.extent;
 
   List<BlockSummary> get _blocks => (_controller?.blocks ?? [])
@@ -73,11 +78,47 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   @override
   void initState() {
     super.initState();
-    if (isWindows) BackgroundService.instance.onWarning = _notify;
+    if (isWindows) {
+      BackgroundService.instance.onWarning = _notify;
+      BackgroundService.instance.onNavigateSlot = _navigateSlot;
+      BackgroundService.instance.onCloseViewer = _closeViewer;
+    }
     _initialize();
     if (isWindows) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkHotkeys());
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncViewerEscape();
+  }
+
+  void _syncViewerEscape() {
+    if (!isWindows || !mounted) return;
+    final enabled =
+        _opened != null &&
+        _pointerInside &&
+        ModalRoute.of(context)?.isCurrent == true;
+    if (_viewerEscapeEnabled == enabled) return;
+    _viewerEscapeEnabled = enabled;
+    unawaited(
+      BackgroundService.instance.setViewerEscapeEnabled(enabled).catchError((
+        Object error,
+      ) {
+        if (mounted) _notify(backgroundError(error));
+      }),
+    );
+  }
+
+  void _closeViewer() {
+    if (!mounted ||
+        _opened == null ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    _back();
   }
 
   Future<void> _initialize() async {
@@ -204,6 +245,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         _opened = null;
       }
     });
+    _syncViewerEscape();
   }
 
   Future<void> _checkHotkeys() async {
@@ -224,6 +266,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   void _notify(String message) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
+    _notificationTimer?.cancel();
     final keepStopVisible =
         _automation?.state.engaged == true ||
         _automation?.commandPending == true;
@@ -233,12 +276,20 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         behavior: keepStopVisible ? SnackBarBehavior.floating : null,
         margin: keepStopVisible ? const EdgeInsets.fromLTRB(8, 0, 8, 76) : null,
         content: Text(message),
-        duration: const Duration(seconds: 3),
+        duration: TransientMessage.duration,
         action: SnackBarAction(
           label: 'Закрыть',
-          onPressed: messenger.hideCurrentSnackBar,
+          onPressed: () {
+            _notificationTimer?.cancel();
+            messenger.hideCurrentSnackBar();
+          },
         ),
       ),
+    );
+    // SnackBar's own timeout can pause for accessibility actions or hovering.
+    _notificationTimer = Timer(
+      TransientMessage.duration,
+      messenger.removeCurrentSnackBar,
     );
   }
 
@@ -263,6 +314,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       _display = null;
       if (tab != null) _tab = tab;
     });
+    _syncViewerEscape();
     _changed();
     _focus.requestFocus();
     if (_scroll.hasClients) _scroll.jumpTo(0);
@@ -320,18 +372,23 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       } else {
         await showDialog<void>(
           context: context,
-          builder: (context) => AlertDialog(
-            scrollable: true,
-            title: const Text('Результат импорта'),
-            content: Text(
-              'Добавлено блоков: ${report.blocks}.\n\n${report.errors.join('\n\n')}',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Понятно'),
+          builder: (context) => TransientMessage(
+            identity: report,
+            onExpired: () =>
+                Navigator.of(context).removeRoute(ModalRoute.of(context)!),
+            child: AlertDialog(
+              scrollable: true,
+              title: const Text('Результат импорта'),
+              content: Text(
+                'Добавлено блоков: ${report.blocks}.\n\n${report.errors.join('\n\n')}',
               ),
-            ],
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Понятно'),
+                ),
+              ],
+            ),
           ),
         );
       }
@@ -344,7 +401,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     }
   }
 
-  Future<void> _open(BlockSummary block) async {
+  Future<void> _open(BlockSummary block, {bool requestFocus = true}) async {
     if (_busy || _controller == null) return;
     final generation = ++_openGeneration;
     setState(() {
@@ -378,6 +435,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           _displayPage = 0;
           _source = false;
         });
+        _syncViewerEscape();
         _reportBlockStage(3, block.id, length: full.content.length);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted &&
@@ -386,7 +444,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             _reportBlockStage(4, block.id);
           }
         });
-        _focus.requestFocus();
+        if (requestFocus) _focus.requestFocus();
       } catch (_) {
         if (mounted && generation == _openGeneration) {
           _reportBlockStage(5, block.id);
@@ -423,11 +481,13 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   void _back() {
     ++_openGeneration;
-    if (_opened != null) {
+    if (_opened != null || _opening) {
       setState(() {
+        _opening = false;
         _opened = null;
         _display = null;
       });
+      _syncViewerEscape();
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _ensureSelectionVisible(),
       );
@@ -443,8 +503,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       return KeyEventResult.ignored;
     }
     if (event.logicalKey == LogicalKeyboardKey.escape &&
-        (_opened != null || _view != _View.blocks)) {
-      _back();
+        (_opened != null || _opening || _view != _View.blocks)) {
+      if (event is KeyDownEvent) _back();
       return KeyEventResult.handled;
     }
     if (_opened != null || _view == _View.settings || _busy) {
@@ -456,8 +516,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
         event.logicalKey == LogicalKeyboardKey.arrowUp) {
       final delta = event.logicalKey == LogicalKeyboardKey.arrowDown ? 1 : -1;
-      final next = (index + delta).clamp(0, blocks.length - 1);
-      setState(() => _selected = blocks[next].id);
+      _selectRelative(delta);
       _focus.requestFocus();
       _ensureSelectionVisible();
       return KeyEventResult.handled;
@@ -474,6 +533,26 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
+  }
+
+  BlockSummary? _selectRelative(int delta) {
+    final blocks = _blocks;
+    if (blocks.isEmpty) return null;
+    final index = blocks.indexWhere((block) => block.id == _selected);
+    final next = blocks[(index + delta).clamp(0, blocks.length - 1)];
+    setState(() => _selected = next.id);
+    return next;
+  }
+
+  void _navigateSlot(int delta) {
+    if (!mounted || _busy || ModalRoute.of(context)?.isCurrent != true) return;
+    final next = _selectRelative(delta);
+    if (next == null) return;
+    if (_opened != null) {
+      if (_opened!.id != next.id) unawaited(_open(next, requestFocus: false));
+    } else if (_view != _View.settings) {
+      _ensureSelectionVisible();
+    }
   }
 
   void _ensureSelectionVisible() {
@@ -556,8 +635,20 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   @override
   void dispose() {
+    _notificationTimer?.cancel();
     ++_openGeneration;
-    if (isWindows) BackgroundService.instance.onWarning = null;
+    if (isWindows) {
+      BackgroundService.instance.onWarning = null;
+      BackgroundService.instance.onNavigateSlot = null;
+      BackgroundService.instance.onCloseViewer = null;
+      if (_viewerEscapeEnabled == true) {
+        unawaited(
+          BackgroundService.instance
+              .setViewerEscapeEnabled(false)
+              .catchError((Object _) {}),
+        );
+      }
+    }
     _controller?.removeListener(_changed);
     _automation?.removeListener(_automationChanged);
     if (_automation != null) _automation!.onStartRequested = null;
@@ -643,7 +734,17 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             onResize: (edge) => _run(() => windowManager.startResizing(edge)),
             onVerticalMaximize: () =>
                 _run(() => windowManager.maximize(vertically: true)),
-            child: panel,
+            child: MouseRegion(
+              onEnter: (_) {
+                _pointerInside = true;
+                _syncViewerEscape();
+              },
+              onExit: (_) {
+                _pointerInside = false;
+                _syncViewerEscape();
+              },
+              child: panel,
+            ),
           )
         : panel;
   }
@@ -759,7 +860,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(_loadError!, textAlign: TextAlign.center),
+          TransientMessage(
+            identity: _loadError,
+            child: Text(_loadError!, textAlign: TextAlign.center),
+          ),
           TextButton(onPressed: _initialize, child: const Text('Повторить')),
         ],
       ),
@@ -816,12 +920,19 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     );
   }
 
+  void _selectSlot(BlockSummary block) {
+    if (_busy) return;
+    setState(() => _selected = block.id);
+    _focus.requestFocus();
+  }
+
   Widget _card(BlockSummary block) => BlockCard(
     key: ValueKey('block-${block.id}'),
     block: block,
     selected: _selected == block.id,
     showDescriptions: _controller!.showDescriptions,
     enabled: !_busy,
+    onSelect: () => _selectSlot(block),
     onOpen: () => _open(block),
     canAutomate: _automation != null,
     onStop: _automation?.protects(block.id) == true ? _automation!.stop : null,
@@ -1034,7 +1145,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                     (block) => block.fileId == file.id,
                   );
                   return ExpansionTile(
-                    key: ValueKey('file-${file.id}'),
+                    key: PageStorageKey('file-${file.id}'),
                     dense: true,
                     title: Text(
                       file.filename,
@@ -1055,18 +1166,25 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                     ),
                     children: [
                       for (final block in blocks)
-                        ListTile(
-                          dense: true,
-                          title: Text(
-                            block.displayTitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                        BlockTapRegion(
+                          key: ValueKey('file-block-${block.id}'),
+                          enabled: !_busy,
+                          selected: _selected == block.id,
+                          onSelect: () => _selectSlot(block),
+                          onOpen: () => _open(block),
+                          child: ListTile(
+                            dense: true,
+                            selected: _selected == block.id,
+                            title: Text(
+                              block.displayTitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            leading: Icon(
+                              block.pinned ? Icons.push_pin : Icons.notes,
+                              size: 14,
+                            ),
                           ),
-                          leading: Icon(
-                            block.pinned ? Icons.push_pin : Icons.notes,
-                            size: 14,
-                          ),
-                          onTap: () => _open(block),
                         ),
                     ],
                   );

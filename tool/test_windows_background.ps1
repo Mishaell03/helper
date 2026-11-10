@@ -80,6 +80,17 @@ public static class HelperWinTest {
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint key);
     [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr hwnd, int id);
+    public static void AssertSlotKey(IntPtr hwnd, uint key, bool reserved) {
+        int id = 0x6200 + (int)key;
+        bool acquired = RegisterHotKey(hwnd, id, 6, key);
+        if (acquired) UnregisterHotKey(hwnd, id);
+        if (acquired == reserved)
+            throw new Exception("Unexpected registration state for Ctrl+Shift+VK " + key + "; reserved=" + reserved);
+    }
+    public static void AssertSlotKeys(IntPtr hwnd, bool reserved) {
+        AssertSlotKey(hwnd, 0x25, reserved);
+        AssertSlotKey(hwnd, 0x27, reserved);
+    }
     public static IntPtr WindowFor(uint pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((hwnd, data) => {
@@ -179,6 +190,8 @@ try {
     if ([HelperWinTest]::GetForegroundWindow() -ne $probe) {
         throw 'Could not focus the other window; rerun from an interactive desktop.'
     }
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
+    [HelperWinTest]::AssertSlotKey($probe, 0x72, $false)
     $app = Start-Process $Executable -PassThru
     $script:hwnd = [IntPtr]::Zero
     Wait-For {
@@ -192,21 +205,69 @@ try {
     }
     [HelperWinTest]::AssertFrameless($script:hwnd)
     [HelperWinTest]::CheckResizeFrame($script:hwnd)
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $true)
+    [HelperWinTest]::Shortcut(0x72) # F3 disables visible-window navigation.
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
+    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+    [HelperWinTest]::Shortcut(0x72)
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $true)
+    [HelperWinTest]::Shortcut(0x75) # Release immediately, even if no block is selected.
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
+    [HelperWinTest]::Shortcut(0x77) # Emergency stop also releases, without re-enabling.
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
+    [HelperWinTest]::Shortcut(0x72)
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $true)
+    [HelperWinTest]::Shortcut(0x77)
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
 
     [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
     [HelperWinTest]::Shortcut(0x7b)
     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not hide Helper.'
     if ($app.HasExited) { throw 'Hiding terminated Helper.' }
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
+    # A conflict on Right must also roll back the acquired Left registration.
+    if (-not [HelperWinTest]::RegisterHotKey($probe, 0x6300, 6, 0x27)) {
+        throw 'Could not acquire the temporary slot conflict.'
+    }
+    try {
+        [HelperWinTest]::Shortcut(0x72)
+        Start-Sleep -Milliseconds 300
+        [HelperWinTest]::AssertSlotKey($probe, 0x25, $false)
+    } finally {
+        [void][HelperWinTest]::UnregisterHotKey($probe, 0x6300)
+    }
+    [HelperWinTest]::Shortcut(0x72) # Retry: hidden manual mode, no reveal or focus.
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $true)
+    if ([HelperWinTest]::IsWindowVisible($script:hwnd)) { throw 'F3 revealed Helper.' }
+    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+    [HelperWinTest]::Shortcut(0x72)
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
     [HelperWinTest]::Shortcut(0x7b)
     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not restore Helper.'
     [HelperWinTest]::AssertFrameless($script:hwnd)
     [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+    Start-Sleep -Milliseconds 300
+    [HelperWinTest]::AssertSlotKeys($probe, $true)
     for ($cycle = 0; $cycle -lt 10; ++$cycle) {
         [HelperWinTest]::Shortcut(0x7b)
         Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Repeated hide failed.'
+        Start-Sleep -Milliseconds 100
+        [HelperWinTest]::AssertSlotKeys($probe, $false)
         [HelperWinTest]::Shortcut(0x7b)
         Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Repeated show failed.'
         [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+        Start-Sleep -Milliseconds 100
+        [HelperWinTest]::AssertSlotKeys($probe, $true)
     }
 
     [void][HelperWinTest]::PostMessage($script:hwnd, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
@@ -235,6 +296,7 @@ try {
     $app = Start-Process $Executable -ArgumentList '--background' -PassThru
     # Observe initialization, not only the settled state three seconds later.
     Assert-StaysHidden 5000
+    [HelperWinTest]::AssertSlotKeys($probe, $false)
     Wait-For {
         $script:hwnd = [HelperWinTest]::WindowFor($app.Id)
         $script:hwnd -ne [IntPtr]::Zero

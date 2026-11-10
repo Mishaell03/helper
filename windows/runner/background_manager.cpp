@@ -27,6 +27,11 @@ constexpr int kMinWidth = 360;
 constexpr int kMinHeight = 300;
 constexpr int kMaxWidth = 1600;
 constexpr int kMaxHeight = 1200;
+constexpr UINT kSlotModifiers = MOD_CONTROL | MOD_SHIFT;
+constexpr int kSlotToggleId = 0x4801;
+constexpr int kSlotPreviousId = 0x4802;
+constexpr int kSlotNextId = 0x4803;
+constexpr int kViewerEscapeId = 0x4804;
 double WindowScale(HWND window) {
   const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
   return FlutterDesktopGetDpiForMonitor(monitor) / 96.0;
@@ -119,7 +124,8 @@ BackgroundManager::BackgroundManager(HWND window,
       [this](UINT win_key, bool replay) {
         HideForTaskView();
         if (replay && task_view_guard_) task_view_guard_->ReplaySuppressedChord(win_key);
-      });
+      },
+      [this]() { DisableSlotNavigation(); });
 
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "helper/background", &flutter::StandardMethodCodec::GetInstance());
@@ -202,7 +208,14 @@ BackgroundManager::BackgroundManager(HWND window,
         }
       }
       std::string error;
-      if (!Apply(shortcuts, true, &error)) {
+      // Configurable existing actions take priority over the new fixed keys.
+      ReleaseSlotNavigation();
+      if (slot_toggle_registered_) UnregisterHotKey(window_, kSlotToggleId);
+      slot_toggle_registered_ = false;
+      const bool applied = Apply(shortcuts, true, &error);
+      RegisterSlotToggle();
+      UpdateSlotNavigation();
+      if (!applied) {
         result->Error("hotkey_error", error);
       } else {
         startup_error_.clear();
@@ -220,6 +233,17 @@ BackgroundManager::BackgroundManager(HWND window,
         return;
       }
       recording_ = *enabled;
+      UpdateSlotNavigation();
+      UpdateViewerEscape();
+      result->Success();
+    } else if (method == "setViewerEscapeEnabled") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      if (!enabled) {
+        result->Error("invalid_argument", "Ожидается режим Escape для просмотра.");
+        return;
+      }
+      viewer_escape_requested_ = *enabled;
+      UpdateViewerEscape();
       result->Success();
     } else if (method == "setAutostart") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
@@ -265,6 +289,7 @@ BackgroundManager::BackgroundManager(HWND window,
       result->NotImplemented();
     }
   });
+  RegisterSlotToggle();
   task_view_guard_ = std::make_unique<TaskViewGuard>([this]() { HideForTaskView(); });
   if (!task_view_guard_->active()) {
     startup_error_ += "Не удалось включить скрытие перед Win+Tab. Проверьте показ панели в обзоре задач. ";
@@ -277,6 +302,9 @@ BackgroundManager::~BackgroundManager() {
   watchdog_.reset();
   task_view_guard_.reset();
   automation_.reset();
+  ReleaseSlotNavigation();
+  if (slot_toggle_registered_) UnregisterHotKey(window_, kSlotToggleId);
+  ReleaseViewerEscape();
   if (prepared_) SaveSize();
   channel_->SetMethodCallHandler(nullptr);
   for (const auto& binding : bindings_) {
@@ -329,7 +357,108 @@ bool BackgroundManager::DispatchControlHotkey(UINT key, UINT modifiers) const {
       return true;
     }
   }
+  if (slot_toggle_registered_ && key == VK_F3 && modifiers == kSlotModifiers) {
+    PostMessage(window_, WM_HOTKEY, kSlotToggleId, MAKELPARAM(modifiers, key));
+    return true;
+  }
+  if (viewer_escape_registered_ && key == VK_ESCAPE && modifiers == 0) {
+    PostMessage(window_, WM_HOTKEY, kViewerEscapeId, MAKELPARAM(0, VK_ESCAPE));
+    return true;
+  }
   return false;
+}
+
+bool BackgroundManager::SlotWindowVisible() const {
+  return !hidden_ && visibility_.may_show() && !parking_.parked() &&
+      IsWindowVisible(window_) && !IsIconic(window_);
+}
+
+void BackgroundManager::ReleaseViewerEscape() {
+  if (!viewer_escape_registered_) return;
+  UnregisterHotKey(window_, kViewerEscapeId);
+  viewer_escape_registered_ = false;
+}
+
+void BackgroundManager::UpdateViewerEscape() {
+  // Dart requests Escape only for an open viewer under the mouse, never for
+  // the block list or a modal route. Native visibility also handles parking.
+  if (!ViewerEscapeAllowed()) {
+    ReleaseViewerEscape();
+    return;
+  }
+  if (viewer_escape_registered_) return;
+  if (RegisterHotKey(window_, kViewerEscapeId, MOD_NOREPEAT, VK_ESCAPE)) {
+    viewer_escape_registered_ = true;
+  } else {
+    viewer_escape_requested_ = false; // No retries on every resize/message.
+    channel_->InvokeMethod("warning", std::make_unique<Value>(
+        "Escape недоступен для просмотра. Используйте стрелку «Назад»."));
+  }
+}
+
+bool BackgroundManager::ViewerEscapeAllowed() const {
+  POINT cursor{};
+  return viewer_escape_requested_ && SlotWindowVisible() && !recording_ && !in_move_size_loop_ &&
+      !import_dialog_ && GetCursorPos(&cursor) &&
+      GetAncestor(WindowFromPoint(cursor), GA_ROOT) == window_;
+}
+
+void BackgroundManager::ReleaseSlotNavigation() {
+  if (!slot_arrows_registered_) return;
+  UnregisterHotKey(window_, kSlotPreviousId);
+  UnregisterHotKey(window_, kSlotNextId);
+  slot_arrows_registered_ = false;
+}
+
+void BackgroundManager::DisableSlotNavigation() {
+  slot_navigation_.Disable();
+  ReleaseSlotNavigation();
+}
+
+void BackgroundManager::RegisterSlotToggle() {
+  if (slot_toggle_registered_) return;
+  const bool configured = std::any_of(bindings_.begin(), bindings_.end(),
+      [](const Binding& b) { return b.shortcut == Shortcut{kSlotModifiers, VK_F3}; });
+  if (configured || !RegisterHotKey(window_, kSlotToggleId,
+                                  kSlotModifiers | MOD_NOREPEAT, VK_F3)) {
+    slot_warnings_[0] = "Ctrl + Shift + F3 недоступно для переключения слотов: сочетание занято. ";
+    channel_->InvokeMethod("warning", std::make_unique<Value>(slot_warnings_[0]));
+    return;
+  }
+  slot_toggle_registered_ = true;
+  slot_warnings_[0].clear();
+}
+
+void BackgroundManager::UpdateSlotNavigation() {
+  const bool inserting = automation_ && automation_->blocks_slot_navigation();
+  if (inserting) slot_navigation_.Disable();
+  const bool enabled = slot_navigation_.enabled(SlotWindowVisible(), inserting) &&
+      !recording_ && !import_dialog_;
+  if (!enabled) {
+    ReleaseSlotNavigation();
+    return;
+  }
+  if (slot_arrows_registered_) return;
+  const bool configured = std::any_of(bindings_.begin(), bindings_.end(),
+      [](const Binding& b) {
+        return b.shortcut == Shortcut{kSlotModifiers, VK_LEFT} ||
+            b.shortcut == Shortcut{kSlotModifiers, VK_RIGHT};
+      });
+  if (!configured && RegisterHotKey(window_, kSlotPreviousId,
+                                   kSlotModifiers | MOD_NOREPEAT, VK_LEFT)) {
+    if (RegisterHotKey(window_, kSlotNextId,
+                       kSlotModifiers | MOD_NOREPEAT, VK_RIGHT)) {
+      slot_arrows_registered_ = true;
+      slot_warnings_[1].clear();
+      return;
+    }
+    // Acquire the pair atomically; never leave just one arrow reserved.
+    UnregisterHotKey(window_, kSlotPreviousId);
+  }
+  slot_navigation_.Disable();
+  slot_warnings_[1] = "Навигация по слотам отключена: Ctrl + Shift + стрелки заняты. "
+      "Освободите сочетания и повторите F3 или показ окна. ";
+  channel_->InvokeMethod("warning", std::make_unique<Value>(slot_warnings_[1]));
 }
 
 bool BackgroundManager::Apply(const std::array<Shortcut, kActionCount>& shortcuts,
@@ -404,7 +533,7 @@ BackgroundManager::Value BackgroundManager::State() const {
                      [](const Binding& b) { return b.id != 0; }))},
                    {Value("autostart"), Value(autostart_)},
                    {Value("startHidden"), Value(start_hidden_)},
-                   {Value("warning"), Value(startup_error_)}};
+                   {Value("warning"), Value(startup_error_ + slot_warnings_[0] + slot_warnings_[1])}};
   for (size_t i = 0; i < bindings_.size(); ++i) state[Value(kActionNames[i])] = encode(bindings_[i].shortcut);
   return Value(state);
 }
@@ -526,6 +655,9 @@ void BackgroundManager::Hide(bool persist_size) {
   if (watchdog_) watchdog_->SetVisible(false);
   TraceCapture("hide.begin", window_, hidden_, parking_.parked());
   visibility_.Hide();
+  ReleaseViewerEscape();
+  slot_navigation_.Hide();
+  ReleaseSlotNavigation();
   if (hidden_) return;
   if (prepared_ && persist_size) SaveSize();
   hidden_ = true;
@@ -560,7 +692,12 @@ void BackgroundManager::RestoreExternalFocus() {
 }
 
 bool BackgroundManager::Show() {
-  return ShowWindowSafely();
+  const bool was_visible = SlotWindowVisible();
+  if (!ShowWindowSafely()) return false;
+  RegisterSlotToggle();
+  if (!was_visible) slot_navigation_.Show(automation_->blocks_slot_navigation());
+  UpdateSlotNavigation();
+  return true;
 }
 
 bool BackgroundManager::ShowWindowSafely() {
@@ -587,6 +724,7 @@ bool BackgroundManager::ShowWindowSafely() {
   }
   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
   if (hidden_) return false;
+  UpdateViewerEscape();
   if (watchdog_) watchdog_->SetVisible(true);
   PostMessage(window_, kRefreshHelperFrame, 0, 0);
   RedrawWindow(window_, nullptr, nullptr,
@@ -618,7 +756,9 @@ void BackgroundManager::PickMarkdownFiles(
     result->Error("import_error", "Диалог импорта уже открыт.");
     return;
   }
+  ReleaseSlotNavigation();
   bool activation_restored = true;
+  ReleaseViewerEscape();
   HRESULT status = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(import_dialog_.GetAddressOf()));
   const COMDLG_FILTERSPEC filters[] = {
@@ -635,6 +775,8 @@ void BackgroundManager::PickMarkdownFiles(
     const bool was_keyboard_active = keyboard_activation_;
     if (!SetKeyboardActivation(true)) {
       import_dialog_.Reset();
+      UpdateSlotNavigation();
+      UpdateViewerEscape();
       result->Error("window_activation_error", "Не удалось активировать диалог импорта.");
       return;
     }
@@ -672,6 +814,8 @@ void BackgroundManager::PickMarkdownFiles(
     }
   }
   import_dialog_.Reset();
+  UpdateSlotNavigation();
+  UpdateViewerEscape();
   if (!activation_restored) {
     result->Error("window_activation_error", "Не удалось восстановить режим окна после импорта.");
   } else if (SUCCEEDED(status) || status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
@@ -800,8 +944,18 @@ void BackgroundManager::SaveSize() {
 }
 
 bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if ((message == WM_SIZE && wparam == SIZE_MINIMIZED) ||
+      (message == WM_SHOWWINDOW && wparam == FALSE)) {
+    slot_navigation_.Hide();
+    ReleaseSlotNavigation();
+    ReleaseViewerEscape();
+  } else if ((message == WM_SIZE || message == WM_SHOWWINDOW) && SlotWindowVisible()) {
+    UpdateSlotNavigation();
+    UpdateViewerEscape();
+  }
   if (message == WM_ENTERSIZEMOVE || message == WM_EXITSIZEMOVE) {
     in_move_size_loop_ = message == WM_ENTERSIZEMOVE;
+    UpdateViewerEscape();
     if (watchdog_) watchdog_->SetMoveSizeLoop(in_move_size_loop_);
     TraceCapture(in_move_size_loop_ ? "resize.begin" : "resize.end",
                  window_, hidden_, parking_.parked());
@@ -913,6 +1067,39 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
   if (message != WM_HOTKEY) return false;
   const UINT modifiers = static_cast<UINT>(LOWORD(lparam)) & 0x0fu;
   const UINT key = static_cast<UINT>(HIWORD(lparam));
+  if (wparam == kViewerEscapeId) {
+    if (viewer_escape_registered_ && ViewerEscapeAllowed() &&
+        modifiers == 0 && key == VK_ESCAPE) {
+      viewer_escape_requested_ = false;
+      ReleaseViewerEscape();
+      channel_->InvokeMethod("closeViewer", nullptr);
+    } else if (!ViewerEscapeAllowed()) {
+      ReleaseViewerEscape();
+    }
+    return true;
+  }
+  if (wparam == kSlotToggleId && slot_toggle_registered_ &&
+      modifiers == kSlotModifiers && key == VK_F3) {
+    if (recording_ && GetForegroundWindow() == window_) {
+      channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
+          {Value("modifiers"), Value(static_cast<int32_t>(modifiers))},
+          {Value("key"), Value(static_cast<int32_t>(key))}}));
+    } else if (!import_dialog_) {
+      slot_navigation_.Toggle(SlotWindowVisible(), automation_->blocks_slot_navigation());
+      UpdateSlotNavigation();
+    }
+    return true;
+  }
+  if (wparam == kSlotPreviousId || wparam == kSlotNextId) {
+    const UINT expected = wparam == kSlotPreviousId ? VK_LEFT : VK_RIGHT;
+    if (slot_arrows_registered_ && modifiers == kSlotModifiers && key == expected &&
+        slot_navigation_.enabled(SlotWindowVisible(), automation_->blocks_slot_navigation()) &&
+        !recording_ && !import_dialog_) {
+      channel_->InvokeMethod("navigateSlot", std::make_unique<Value>(
+          static_cast<int32_t>(key == VK_LEFT ? -1 : 1)));
+    }
+    return true;
+  }
   // Ignore stale queued messages after reconfiguration.
   for (size_t i = 0; i < bindings_.size(); ++i) {
     const auto& b = bindings_[i];

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'block_tap_region.dart';
 import 'models.dart';
 
 enum BlockAction { copy, pin, delete, type }
@@ -11,6 +12,7 @@ class BlockCard extends StatelessWidget {
     required this.selected,
     required this.showDescriptions,
     required this.enabled,
+    required this.onSelect,
     required this.onOpen,
     required this.onAction,
     this.onStop,
@@ -23,6 +25,7 @@ class BlockCard extends StatelessWidget {
   final bool selected;
   final bool showDescriptions;
   final bool enabled;
+  final VoidCallback onSelect;
   final VoidCallback onOpen;
   final ValueChanged<BlockAction> onAction;
   final VoidCallback? onStop;
@@ -35,7 +38,8 @@ class BlockCard extends StatelessWidget {
     child: Semantics(
       selected: selected,
       button: true,
-      hint: 'Enter — открыть, Ctrl+C — копировать',
+      hint:
+          'Клик — выбрать, двойной клик или Enter — открыть, Ctrl+C — копировать',
       label: '${block.displayTitle}${block.pinned ? ', закреплён' : ''}',
       child: Material(
         color: Colors.white.withValues(alpha: selected ? 0.075 : 0.035),
@@ -49,8 +53,11 @@ class BlockCard extends StatelessWidget {
           ),
         ),
         clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: enabled ? onOpen : null,
+        child: BlockTapRegion(
+          enabled: enabled,
+          selected: selected,
+          onSelect: onSelect,
+          onOpen: onOpen,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(10, 4, 4, 2),
             child: Column(

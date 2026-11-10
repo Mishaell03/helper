@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'background_service.dart';
+import 'transient_message.dart';
 
 class HotkeySettings extends StatefulWidget {
   const HotkeySettings({
@@ -27,6 +28,12 @@ class _HotkeySettingsState extends State<HotkeySettings> {
   bool _busy = true;
   bool _autostart = false;
   String? _message;
+  int _messageRevision = 0;
+
+  void _setMessage(String? message) {
+    _message = message;
+    ++_messageRevision;
+  }
 
   @override
   void initState() {
@@ -43,10 +50,10 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       setState(() {
         _keys = HotkeyAction.values.map(settings.hotkey).toList();
         _autostart = settings.autostart;
-        _message = settings.warning.isEmpty ? null : settings.warning;
+        _setMessage(settings.warning.isEmpty ? null : settings.warning);
       });
     } catch (error) {
-      if (mounted) setState(() => _message = _error(error));
+      if (mounted) setState(() => _setMessage(_error(error)));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -66,10 +73,10 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       if (!mounted) return;
       setState(() {
         _keys = HotkeyAction.values.map(settings.hotkey).toList();
-        _message = 'Сохранено. Глобальные горячие клавиши действуют.';
+        _setMessage('Сохранено. Глобальные горячие клавиши действуют.');
       });
     } catch (error) {
-      if (mounted) setState(() => _message = _error(error));
+      if (mounted) setState(() => _setMessage(_error(error)));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -103,16 +110,16 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       if (mounted && settings != null) {
         setState(() {
           _keys = HotkeyAction.values.map(settings.hotkey).toList();
-          _message = 'Сохранено. Глобальные горячие клавиши действуют.';
+          _setMessage('Сохранено. Глобальные горячие клавиши действуют.');
         });
       }
     } catch (error) {
-      if (mounted) setState(() => _message = _error(error));
+      if (mounted) setState(() => _setMessage(_error(error)));
     } finally {
       try {
         await _service.setRecording(false);
       } catch (error) {
-        if (mounted) setState(() => _message = _error(error));
+        if (mounted) setState(() => _setMessage(_error(error)));
       }
       if (mounted) setState(() => _busy = false);
     }
@@ -126,13 +133,15 @@ class _HotkeySettingsState extends State<HotkeySettings> {
       if (mounted) {
         setState(() {
           _autostart = settings.autostart;
-          _message = enabled
-              ? 'Автозапуск включён. При входе в Windows окно будет скрыто.'
-              : 'Автозапуск отключён.';
+          _setMessage(
+            enabled
+                ? 'Автозапуск включён. При входе в Windows окно будет скрыто.'
+                : 'Автозапуск отключён.',
+          );
         });
       }
     } catch (error) {
-      if (mounted) setState(() => _message = _error(error));
+      if (mounted) setState(() => _setMessage(_error(error)));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -186,10 +195,14 @@ class _HotkeySettingsState extends State<HotkeySettings> {
               onChanged: _busy ? null : _setAutostart,
             ),
           ],
-          if (_message != null) ...[
-            const SizedBox(height: 12),
-            Text(_message!, key: const Key('hotkeyMessage')),
-          ],
+          if (_message != null)
+            TransientMessage(
+              identity: _messageRevision,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(_message!, key: const Key('hotkeyMessage')),
+              ),
+            ),
         ],
       ),
     );
@@ -230,6 +243,7 @@ class _RecorderState extends State<_Recorder> {
   Hotkey? _hotkey;
   String? _error;
   bool _saving = false;
+  int _feedbackRevision = 0;
 
   @override
   void initState() {
@@ -240,6 +254,7 @@ class _RecorderState extends State<_Recorder> {
   void _accept(Hotkey key) {
     if (!mounted || _saving) return;
     setState(() {
+      ++_feedbackRevision;
       _hotkey = key.modifiers == 0 ? null : key;
       _error = key.modifiers == 0 ? 'Добавьте Ctrl, Alt, Shift или Win.' : null;
     });
@@ -257,6 +272,7 @@ class _RecorderState extends State<_Recorder> {
     } catch (error) {
       if (mounted) {
         setState(() {
+          ++_feedbackRevision;
           _saving = false;
           _error = backgroundError(error);
         });
@@ -296,7 +312,14 @@ class _RecorderState extends State<_Recorder> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(_hotkey?.label ?? 'Ожидание нажатия… Esc — отмена'),
-            if (_error != null) ...[const SizedBox(height: 8), Text(_error!)],
+            if (_error != null)
+              TransientMessage(
+                identity: (_error, _feedbackRevision),
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_error!),
+                ),
+              ),
           ],
         ),
         actions: [
