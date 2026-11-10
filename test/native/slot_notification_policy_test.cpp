@@ -24,12 +24,27 @@ int main() {
   SlotNotificationLifetime lifetime;
   assert(lifetime.Remaining(0) == 0);
   lifetime.Restart(100);
-  assert(lifetime.Remaining(100) == 3000);
-  assert(lifetime.Remaining(3099) == 1);
-  assert(lifetime.Remaining(3100) == 0);
-  lifetime.Restart(3000);
-  assert(lifetime.Remaining(3100) == 2900); // Old queued timer cannot dismiss new text.
-  assert(lifetime.Remaining(6000) == 0);
+  assert(SlotNotificationLifetime::kDurationMs == 2000);
+  assert(lifetime.Remaining(100) == 2000);
+  assert(lifetime.Remaining(2099) == 1);
+  assert(lifetime.Remaining(2100) == 0);
+  lifetime.Restart(2000);
+  assert(lifetime.Remaining(2100) == 1900); // Old queued timer cannot dismiss new text.
+  assert(lifetime.Remaining(4000) == 0);
+  lifetime.SetDragging(true);
+  assert(!lifetime.ShouldHide(4000));
+  lifetime.SetDragging(false);
+  assert(lifetime.ShouldHide(4000)); // Expired while held: hide on release.
+  lifetime.Restart(5000);
+  lifetime.SetDragging(true);
+  lifetime.SetDragging(false);
+  assert(!lifetime.ShouldHide(6000)); // Early release preserves the original deadline.
+  assert(lifetime.ShouldHide(7000));
+  lifetime.SetDragging(true);
+  lifetime.Restart(8000); // New slot after expiration during drag gets a fresh interval.
+  lifetime.SetDragging(false);
+  assert(!lifetime.ShouldHide(8001));
+  assert(lifetime.ShouldHide(10000));
   lifetime.Restart(7000);
   lifetime.Dismiss(); // Show main window / disable / teardown.
   assert(lifetime.Remaining(7000) == 0);

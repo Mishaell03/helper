@@ -149,10 +149,10 @@ bool SlotNotification::Render(HMONITOR monitor, const POINT* requested) {
   const int work_height = info.rcWork.bottom - info.rcWork.top;
   if (work_width <= 0 || work_height <= 0) return false;
   const double scale = MonitorScale(monitor);
-  const int padding = static_cast<int>(std::ceil(3 * scale));
-  const int max_width = (std::max)(1, (std::min)(static_cast<int>(480 * scale), work_width));
-  const int max_height = (std::max)(1, (std::min)(static_cast<int>(40 * scale), work_height));
-  Gdiplus::Font font(L"Segoe UI", static_cast<Gdiplus::REAL>(16 * scale),
+  const int padding = static_cast<int>(std::ceil(2 * scale));
+  const int max_width = (std::max)(1, (std::min)(static_cast<int>(420 * scale), work_width));
+  const int max_height = (std::max)(1, (std::min)(static_cast<int>(34 * scale), work_height));
+  Gdiplus::Font font(L"Segoe UI", static_cast<Gdiplus::REAL>(14 * scale),
       Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
   Gdiplus::StringFormat format;
   format.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
@@ -311,12 +311,19 @@ LRESULT SlotNotification::HandleMessage(UINT message, WPARAM wp, LPARAM lp) {
     // Layered-window alpha-zero pixels pass mouse input to windows underneath.
     // Only the small rendered text/shadow region initiates the system move loop.
     case WM_NCHITTEST: return HTCAPTION;
-    case WM_EXITSIZEMOVE: SavePosition(); break;
+    case WM_ENTERSIZEMOVE: lifetime_.SetDragging(true); return 0;
+    case WM_EXITSIZEMOVE:
+      SavePosition();
+      lifetime_.SetDragging(false);
+      if (lifetime_.ShouldHide(GetTickCount64())) Dismiss();
+      return 0;
     case WM_TIMER:
       if (wp == kHideTimer) {
         const UINT remaining = lifetime_.Remaining(GetTickCount64());
-        if (!remaining) Dismiss();
-        else if (!SetTimer(window_, kHideTimer, remaining, nullptr)) Dismiss();
+        if (!remaining) {
+          KillTimer(window_, kHideTimer);
+          if (lifetime_.ShouldHide(GetTickCount64())) Dismiss();
+        } else if (!SetTimer(window_, kHideTimer, remaining, nullptr)) Dismiss();
         return 0;
       }
       break;

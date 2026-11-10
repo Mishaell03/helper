@@ -11,14 +11,17 @@ inline bool ShouldShowSlotNotification(bool enabled, bool main_visible, int64_t 
 
 class SlotNotificationLifetime {
  public:
-  static constexpr uint32_t kDurationMs = 3000;
+  static constexpr uint32_t kDurationMs = 2000;
   void Restart(uint64_t now) { deadline_ = now + kDurationMs; active_ = true; }
   void Dismiss() { active_ = false; }
+  void SetDragging(bool dragging) { dragging_ = dragging; }
+  bool ShouldHide(uint64_t now) const { return active_ && !dragging_ && Remaining(now) == 0; }
   uint32_t Remaining(uint64_t now) const {
     return active_ && now < deadline_ ? static_cast<uint32_t>(deadline_ - now) : 0;
   }
  private:
   bool active_ = false;
+  bool dragging_ = false;
   uint64_t deadline_ = 0;
 };
 
