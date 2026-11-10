@@ -1,0 +1,446 @@
+diff --git a/tool/test_windows_background.ps1 b/tool/test_windows_background.ps1
+index f5535b6..b29efbc 100644
+--- a/tool/test_windows_background.ps1
++++ b/tool/test_windows_background.ps1
+@@ -58,6 +58,19 @@ public static class HelperWinTest {
+     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder name, int count);
+     [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr hwnd, int index);
+     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wp, IntPtr lp);
++    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wp, IntPtr lp);
++    public static void AssertNonActivating(IntPtr hwnd, IntPtr foreground) {
++        if ((GetWindowLong(hwnd, -20) & 0x08000000) == 0)
++            throw new Exception("WS_EX_NOACTIVATE is missing.");
++        IntPtr child = GetWindow(hwnd, 5); // GW_CHILD: Flutter view.
++        if (child == IntPtr.Zero) throw new Exception("Flutter child HWND is missing.");
++        foreach (IntPtr target in new[] { hwnd, child }) {
++            if (SendMessage(target, 0x21, hwnd, new IntPtr(0x02010001)).ToInt64() != 3)
++                throw new Exception("WM_MOUSEACTIVATE must return MA_NOACTIVATE without eating the click.");
++        }
++        if (GetForegroundWindow() != foreground)
++            throw new Exception("Helper stole foreground focus.");
++    }
+     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateWindowEx(
+@@ -158,12 +171,21 @@ function Assert-StaysHidden([int]$Milliseconds) {
+ $app = $null
+ $probe = [IntPtr]::Zero
+ try {
++    $probe = [HelperWinTest]::CreateWindowEx(0, 'STATIC', 'Global hotkey test',
++        0x10CF0000, 100, 100, 400, 200, [IntPtr]::Zero, [IntPtr]::Zero,
++        [IntPtr]::Zero, [IntPtr]::Zero)
++    if ($probe -eq [IntPtr]::Zero) { throw 'Could not create the focus test window.' }
++    [void][HelperWinTest]::SetForegroundWindow($probe)
++    if ([HelperWinTest]::GetForegroundWindow() -ne $probe) {
++        throw 'Could not focus the other window; rerun from an interactive desktop.'
++    }
+     $app = Start-Process $Executable -PassThru
+     $script:hwnd = [IntPtr]::Zero
+     Wait-For {
+         $script:hwnd = [HelperWinTest]::WindowFor($app.Id)
+         $script:hwnd -ne [IntPtr]::Zero -and [HelperWinTest]::IsWindowVisible($script:hwnd)
+     } 'Application did not launch visibly. Check startup errors and shortcut conflicts.'
++    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+     $styles = [HelperWinTest]::GetWindowLong($script:hwnd, -20)
+     if (($styles -band 0x80) -eq 0 -or ($styles -band 0x40000) -ne 0) {
+         throw 'Expected WS_EX_TOOLWINDOW and no WS_EX_APPWINDOW.'
+@@ -171,21 +193,21 @@ try {
+     [HelperWinTest]::AssertFrameless($script:hwnd)
+     [HelperWinTest]::CheckResizeFrame($script:hwnd)
+ 
+-    # A real, independent native window holds focus while shortcuts are tested.
+-    $probe = [HelperWinTest]::CreateWindowEx(0, 'STATIC', 'Global hotkey test',
+-        0x10CF0000, 100, 100, 400, 200, [IntPtr]::Zero, [IntPtr]::Zero,
+-        [IntPtr]::Zero, [IntPtr]::Zero)
+-    if ($probe -eq [IntPtr]::Zero) { throw 'Could not create the focus test window.' }
+-    [void][HelperWinTest]::SetForegroundWindow($probe)
+-    if ([HelperWinTest]::GetForegroundWindow() -ne $probe) {
+-        throw 'Could not focus the other window; rerun from an interactive desktop.'
+-    }
++    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+     [HelperWinTest]::Shortcut(0x7b)
+     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not hide Helper.'
+     if ($app.HasExited) { throw 'Hiding terminated Helper.' }
+     [HelperWinTest]::Shortcut(0x7b)
+     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not restore Helper.'
+     [HelperWinTest]::AssertFrameless($script:hwnd)
++    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
++    for ($cycle = 0; $cycle -lt 10; ++$cycle) {
++        [HelperWinTest]::Shortcut(0x7b)
++        Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Repeated hide failed.'
++        [HelperWinTest]::Shortcut(0x7b)
++        Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Repeated show failed.'
++        [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
++    }
+ 
+     [void][HelperWinTest]::PostMessage($script:hwnd, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
+     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'WM_CLOSE did not hide Helper.'
+@@ -193,6 +215,7 @@ try {
+     $second = Start-Process $Executable -PassThru
+     if (-not $second.WaitForExit(10000)) { throw 'A second application instance remained alive.' }
+     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Second launch did not restore the existing window.'
++    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+ 
+     [HelperWinTest]::TaskView()
+     Wait-For { -not [HelperWinTest]::IsWindowVisible($script:hwnd) } 'Win+Tab did not hide Helper.'
+@@ -222,6 +245,7 @@ try {
+     [void][HelperWinTest]::SetForegroundWindow($probe)
+     [HelperWinTest]::Shortcut(0x7b)
+     Wait-For { [HelperWinTest]::IsWindowVisible($script:hwnd) } 'F12 did not show the background-started window.'
++    [HelperWinTest]::AssertNonActivating($script:hwnd, $probe)
+     [HelperWinTest]::Shortcut(0x73)
+     if (-not $app.WaitForExit(10000)) { throw 'Background-started application did not exit.' }
+     Write-Output 'PASS: native launch, styles, global toggle/exit, close-to-hide, single instance, hidden background initialization and no focus stealing.'
+diff --git a/windows/runner/CMakeLists.txt b/windows/runner/CMakeLists.txt
+index a942c1e..dd5edbe 100644
+--- a/windows/runner/CMakeLists.txt
++++ b/windows/runner/CMakeLists.txt
+@@ -45,6 +45,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
+ target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
+ target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib" "gdi32.lib")
+ target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib")
++target_link_libraries(${BINARY_NAME} PRIVATE "comctl32.lib")
+ target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib" "ole32.lib" "uuid.lib")
+ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
+ 
+diff --git a/windows/runner/background_manager.cpp b/windows/runner/background_manager.cpp
+index 1276dda..9c74bce 100644
+--- a/windows/runner/background_manager.cpp
++++ b/windows/runner/background_manager.cpp
+@@ -214,8 +214,12 @@ BackgroundManager::BackgroundManager(HWND window,
+         result->Error("invalid_argument", "Ожидается значение «включено» или «выключено».");
+         return;
+       }
++      if (*enabled) automation_->Pause("Запись горячей клавиши. Ввод приостановлен.");
++      if (!SetKeyboardActivation(*enabled)) {
++        result->Error("window_activation_error", "Не удалось изменить режим клавиатурного фокуса.");
++        return;
++      }
+       recording_ = *enabled;
+-      if (recording_) automation_->Pause("Запись горячей клавиши. Ввод приостановлен.");
+       result->Success();
+     } else if (method == "setAutostart") {
+       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+@@ -407,7 +411,9 @@ BackgroundManager::Value BackgroundManager::State() const {
+ 
+ bool BackgroundManager::ApplyStyles() {
+   const LONG_PTR styles = GetWindowLongPtr(window_, GWL_EXSTYLE);
+-  const LONG_PTR desired = (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
++  LONG_PTR desired = (styles | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
++  if (keyboard_activation_) desired &= ~static_cast<LONG_PTR>(WS_EX_NOACTIVATE);
++  else desired |= WS_EX_NOACTIVATE;
+   bool frame_changed = false;
+   if (styles != desired) {
+     SetLastError(ERROR_SUCCESS);
+@@ -443,6 +449,52 @@ bool BackgroundManager::ApplyStyles() {
+   return true;
+ }
+ 
++bool BackgroundManager::SetKeyboardActivation(bool enabled) {
++  if (keyboard_activation_ == enabled) return true;
++  const HWND foreground = GetForegroundWindow();
++  if (enabled) {
++    keyboard_previous_foreground_ = foreground;
++    keyboard_previous_thread_ = GetWindowThreadProcessId(
++        foreground, &keyboard_previous_process_);
++  }
++  keyboard_activation_ = enabled;
++  const bool styles_applied = ApplyStyles();
++  if (!styles_applied && enabled) {
++    keyboard_activation_ = false;
++    ApplyStyles();
++    return false;
++  }
++  if (enabled) {
++    if (!SetForegroundWindow(window_)) {
++      SetKeyboardActivation(false);
++      return false;
++    }
++    // An already-active owner does not receive another WM_ACTIVATE.
++    if (HWND child = GetWindow(window_, GW_CHILD)) SetFocus(child);
++  } else {
++    DWORD process = 0;
++    const DWORD thread = GetWindowThreadProcessId(keyboard_previous_foreground_, &process);
++    // Never take focus back from an application the user switched to, or
++    // substitute an arbitrary window when the saved target is gone/minimized.
++    if (foreground == window_ && keyboard_previous_foreground_ != window_ &&
++        IsWindow(keyboard_previous_foreground_) &&
++        process != GetCurrentProcessId() && process == keyboard_previous_process_ &&
++        thread == keyboard_previous_thread_ &&
++        IsWindowVisible(keyboard_previous_foreground_) &&
++        IsWindowEnabled(keyboard_previous_foreground_) &&
++        !IsIconic(keyboard_previous_foreground_)) {
++      SetForegroundWindow(keyboard_previous_foreground_);
++    }
++    if (GetForegroundWindow() == window_) {
++      SetFocus(nullptr);
++      SetActiveWindow(nullptr);
++    }
++    keyboard_previous_foreground_ = nullptr;
++    keyboard_previous_process_ = keyboard_previous_thread_ = 0;
++  }
++  return styles_applied;
++}
++
+ bool BackgroundManager::PreparePresentation() {
+   if (!ApplyStyles()) return false;
+   const bool composition_changed = !composition_ready_;
+@@ -508,10 +560,10 @@ void BackgroundManager::RestoreExternalFocus() {
+ }
+ 
+ bool BackgroundManager::Show() {
+-  return ShowWindowSafely(true);
++  return ShowWindowSafely();
+ }
+ 
+-bool BackgroundManager::ShowWindowSafely(bool activate) {
++bool BackgroundManager::ShowWindowSafely() {
+   TraceCapture("show.begin", window_, hidden_, parking_.parked());
+   if (!PreparePresentation()) {
+     TraceCapture("show.prepare_failed", window_, hidden_, parking_.parked(), GetLastError());
+@@ -531,9 +583,7 @@ bool BackgroundManager::ShowWindowSafely(bool activate) {
+   // SW_HIDE preserves the rectangle. SetWindowPlacement is unnecessary here
+   // and can itself reveal/activate the window before the intended ShowWindow.
+   if (!IsWindowVisible(window_) || IsIconic(window_)) {
+-    const int command = activate ? (IsIconic(window_) ? SW_RESTORE : SW_SHOW)
+-                                 : SW_SHOWNOACTIVATE;
+-    ShowWindow(window_, command);
++    ShowWindow(window_, SW_SHOWNOACTIVATE);
+   }
+   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
+   if (hidden_) return false;
+@@ -541,17 +591,9 @@ bool BackgroundManager::ShowWindowSafely(bool activate) {
+   PostMessage(window_, kRefreshHelperFrame, 0, 0);
+   RedrawWindow(window_, nullptr, nullptr,
+       RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+-  if (activate) {
+-    HWND foreground = GetForegroundWindow();
+-    DWORD owner = 0;
+-    GetWindowThreadProcessId(foreground, &owner);
+-    if (foreground && owner != GetCurrentProcessId()) previous_foreground_ = foreground;
+-    SetForegroundWindow(window_);
+-  }
+   if (HWND dialog = ImportDialogWindow()) {
+     if (!ExcludeFromCapture(dialog)) return false;
+-    ShowWindow(dialog, activate ? SW_SHOW : SW_SHOWNA);
+-    if (activate) SetForegroundWindow(dialog);
++    ShowWindow(dialog, SW_SHOWNA);
+   }
+   TraceCapture("show.end", window_, hidden_, parking_.parked());
+   return true;
+@@ -567,7 +609,7 @@ HWND BackgroundManager::ImportDialogWindow() const {
+ 
+ bool BackgroundManager::ShowCountdownInactive() {
+   // Same composition/protection path, without taking focus from the editor.
+-  return !import_dialog_ && ShowWindowSafely(false);
++  return !import_dialog_ && ShowWindowSafely();
+ }
+ 
+ void BackgroundManager::PickMarkdownFiles(
+@@ -576,6 +618,7 @@ void BackgroundManager::PickMarkdownFiles(
+     result->Error("import_error", "Диалог импорта уже открыт.");
+     return;
+   }
++  bool activation_restored = true;
+   HRESULT status = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(import_dialog_.GetAddressOf()));
+   const COMDLG_FILTERSPEC filters[] = {
+@@ -589,11 +632,18 @@ void BackgroundManager::PickMarkdownFiles(
+   if (SUCCEEDED(status)) status = import_dialog_->SetOkButtonLabel(L"Импортировать");
+   if (SUCCEEDED(status)) {
+     CaptureDialogScope capture_scope;
++    const bool was_keyboard_active = keyboard_activation_;
++    if (!SetKeyboardActivation(true)) {
++      import_dialog_.Reset();
++      result->Error("window_activation_error", "Не удалось активировать диалог импорта.");
++      return;
++    }
+     if (watchdog_) watchdog_->SetNativeDialogOpen(true);
+     // The Windows dialog pumps messages. HandleMessage defers exit until this
+     // call returns so the messenger/result cannot be destroyed mid-callback.
+     status = import_dialog_->Show(window_);
+     if (watchdog_) watchdog_->SetNativeDialogOpen(false);
++    activation_restored = SetKeyboardActivation(was_keyboard_active);
+   }
+   flutter::EncodableList paths;
+   if (SUCCEEDED(status)) {
+@@ -622,7 +672,9 @@ void BackgroundManager::PickMarkdownFiles(
+     }
+   }
+   import_dialog_.Reset();
+-  if (SUCCEEDED(status) || status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
++  if (!activation_restored) {
++    result->Error("window_activation_error", "Не удалось восстановить режим окна после импорта.");
++  } else if (SUCCEEDED(status) || status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+     result->Success(Value(paths));
+   } else {
+     result->Error("import_error", "Не удалось открыть диалог импорта. Код Windows: " +
+@@ -768,8 +820,17 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
+   if (message == WM_ACTIVATE && LOWORD(wparam) != WA_INACTIVE && lparam) {
+     HWND previous = reinterpret_cast<HWND>(lparam);
+     DWORD owner = 0;
+-    GetWindowThreadProcessId(previous, &owner);
+-    if (owner && owner != GetCurrentProcessId()) previous_foreground_ = previous;
++    const DWORD thread = GetWindowThreadProcessId(previous, &owner);
++    if (owner && owner != GetCurrentProcessId()) {
++      previous_foreground_ = previous;
++      if (keyboard_activation_) {
++        // If the user returned to the recorder from another application, that
++        // latest application, not the original one, is the restoration target.
++        keyboard_previous_foreground_ = previous;
++        keyboard_previous_process_ = owner;
++        keyboard_previous_thread_ = thread;
++      }
++    }
+   }
+   if (message == WM_DISPLAYCHANGE && parking_.parked()) parking_.Repark(window_);
+   if (message == WM_SHOWWINDOW) TraceCapture(wparam ? "WM_SHOWWINDOW.show" : "WM_SHOWWINDOW.hide", window_, hidden_, parking_.parked());
+@@ -800,13 +861,21 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
+           RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+     }
+   }
+-  if (message == WM_WINDOWPOSCHANGING && lparam && !visibility_.may_show()) {
+-    // Defend against plugin/window-initialization requests showing or focusing
+-    // an autostarted window before an explicit reveal action.
++  if (message == WM_STYLECHANGING &&
++      wparam == static_cast<WPARAM>(GWL_EXSTYLE) && lparam) {
++    auto* styles = reinterpret_cast<STYLESTRUCT*>(lparam);
++    if (!keyboard_activation_) styles->styleNew |= WS_EX_NOACTIVATE;
++  }
++  if (message == WM_WINDOWPOSCHANGING && lparam) {
+     auto* position = reinterpret_cast<WINDOWPOS*>(lparam);
+-    position->flags &= ~static_cast<UINT>(SWP_SHOWWINDOW);
+-    position->flags |= SWP_NOACTIVATE;
+-    parking_.ConstrainPosition(position);
++    if (!keyboard_activation_) position->flags |= SWP_NOACTIVATE;
++    if (!visibility_.may_show()) {
++      // Defend against plugin/window-initialization requests showing or focusing
++      // an autostarted window before an explicit reveal action.
++      position->flags &= ~static_cast<UINT>(SWP_SHOWWINDOW);
++      position->flags |= SWP_NOACTIVATE;
++      parking_.ConstrainPosition(position);
++    }
+   }
+   if (automation_ && automation_->HandleMessage(message, wparam)) return true;
+   if (message == WM_ENDSESSION && wparam != 0) automation_->Stop(false);
+diff --git a/windows/runner/background_manager.h b/windows/runner/background_manager.h
+index 2e8d2ca..85fdf37 100644
+--- a/windows/runner/background_manager.h
++++ b/windows/runner/background_manager.h
+@@ -17,7 +17,7 @@
+ #include "task_view_guard.h"
+ #include "window_watchdog.h"
+ 
+-// Also used by a second launch to activate the existing process.
++// Also used by a second launch to reveal the existing process.
+ constexpr UINT kShowHelper = WM_APP + 42;
+ constexpr UINT kRefreshHelperFrame = WM_APP + 44;
+ 
+@@ -27,6 +27,7 @@ class BackgroundManager {
+                     bool start_hidden);
+   ~BackgroundManager();
+   bool HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
++  bool keyboard_activation() const { return keyboard_activation_; }
+ 
+  private:
+   struct Shortcut {
+@@ -54,10 +55,11 @@ class BackgroundManager {
+   void HideForTaskView();
+   bool Show();
+   bool ShowCountdownInactive();
+-  bool ShowWindowSafely(bool activate);
++  bool ShowWindowSafely();
+   bool PreparePresentation();
+   void RestoreExternalFocus();
+   bool ApplyStyles();
++  bool SetKeyboardActivation(bool enabled);
+   bool SetAutostart(bool enabled, std::string* error);
+   void LoadAutostart();
+   void RestoreSize();
+@@ -72,6 +74,10 @@ class BackgroundManager {
+   HWND previous_foreground_ = nullptr;
+   bool composition_ready_ = false;
+   bool recording_ = false;
++  bool keyboard_activation_ = false;
++  HWND keyboard_previous_foreground_ = nullptr;
++  DWORD keyboard_previous_process_ = 0;
++  DWORD keyboard_previous_thread_ = 0;
+   bool start_hidden_ = false;
+   bool autostart_ = false;
+   bool prepared_ = false;
+diff --git a/windows/runner/flutter_window.cpp b/windows/runner/flutter_window.cpp
+index 7529ade..bd8dac0 100644
+--- a/windows/runner/flutter_window.cpp
++++ b/windows/runner/flutter_window.cpp
+@@ -5,6 +5,7 @@
+ #include "flutter/generated_plugin_registrant.h"
+ #include "capture_exclusion.h"
+ #include "frameless_window.h"
++#include "window_activation.h"
+ 
+ FlutterWindow::FlutterWindow(const flutter::DartProject& project, bool start_hidden)
+     : project_(project), start_hidden_(start_hidden) {}
+@@ -31,6 +32,10 @@ bool FlutterWindow::OnCreate() {
+     return false;
+   }
+   RegisterPlugins(flutter_controller_->engine());
++  if (!SetWindowSubclass(flutter_controller_->view()->GetNativeWindow(),
++                         HelperViewActivationProc, 0, 0)) {
++    return false;
++  }
+   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+   background_manager_ = std::make_unique<BackgroundManager>(
+       GetHandle(), flutter_controller_->engine()->messenger(), start_hidden_);
+@@ -57,6 +62,11 @@ LRESULT
+ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
+                               WPARAM const wparam,
+                                 LPARAM const lparam) noexcept {
++  // Do not eat the click: Flutter must still receive the pointer interaction.
++  if (!background_manager_ || !background_manager_->keyboard_activation()) {
++    if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
++    if (message == WM_POINTERACTIVATE) return PA_NOACTIVATE;
++  }
+   // Enforce this before Flutter/plugin delegates, including during startup and
+   // User32's nested move/size loop. Never fall back to classic frame painting.
+   if (const auto frame = HandleFramelessMessage(hwnd, message, wparam, lparam)) {
+diff --git a/windows/runner/win32_window.cpp b/windows/runner/win32_window.cpp
+index 7c1d384..1ec2483 100644
+--- a/windows/runner/win32_window.cpp
++++ b/windows/runner/win32_window.cpp
+@@ -135,7 +135,7 @@ bool Win32Window::Create(const std::wstring& title,
+   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+   double scale_factor = dpi / 96.0;
+ 
+-  HWND window = CreateWindow(
++  HWND window = CreateWindowEx(WS_EX_NOACTIVATE,
+       window_class, title.c_str(), static_cast<DWORD>(FramelessWindowStyle(WS_OVERLAPPEDWINDOW)),
+       Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
+       Scale(size.width, scale_factor), Scale(size.height, scale_factor),
+@@ -151,7 +151,7 @@ bool Win32Window::Create(const std::wstring& title,
+ }
+ 
+ bool Win32Window::Show() {
+-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
++  return ShowWindow(window_handle_, SW_SHOWNOACTIVATE);
+ }
+ 
+ // static
+@@ -209,7 +209,8 @@ Win32Window::MessageHandler(HWND hwnd,
+     }
+ 
+     case WM_ACTIVATE:
+-      if (LOWORD(wparam) != WA_INACTIVE && child_content_ != nullptr) {
++      if (LOWORD(wparam) != WA_INACTIVE && child_content_ != nullptr &&
++          (GetWindowLongPtr(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE) == 0) {
+         SetFocus(child_content_);
+       }
+       return 0;
+@@ -246,8 +247,6 @@ void Win32Window::SetChildContent(HWND content) {
+ 
+   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
+              frame.bottom - frame.top, true);
+-
+-  SetFocus(child_content_);
+ }
+ 
+ RECT Win32Window::GetClientArea() {

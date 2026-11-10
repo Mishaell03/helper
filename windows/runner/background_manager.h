@@ -17,7 +17,7 @@
 #include "task_view_guard.h"
 #include "window_watchdog.h"
 
-// Also used by a second launch to activate the existing process.
+// Also used by a second launch to reveal the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
 constexpr UINT kRefreshHelperFrame = WM_APP + 44;
 
@@ -27,6 +27,7 @@ class BackgroundManager {
                     bool start_hidden);
   ~BackgroundManager();
   bool HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
+  bool keyboard_activation() const { return keyboard_activation_; }
 
  private:
   struct Shortcut {
@@ -54,10 +55,11 @@ class BackgroundManager {
   void HideForTaskView();
   bool Show();
   bool ShowCountdownInactive();
-  bool ShowWindowSafely(bool activate);
+  bool ShowWindowSafely();
   bool PreparePresentation();
   void RestoreExternalFocus();
   bool ApplyStyles();
+  bool SetKeyboardActivation(bool enabled);
   bool SetAutostart(bool enabled, std::string* error);
   void LoadAutostart();
   void RestoreSize();
@@ -72,6 +74,10 @@ class BackgroundManager {
   HWND previous_foreground_ = nullptr;
   bool composition_ready_ = false;
   bool recording_ = false;
+  bool keyboard_activation_ = false;
+  HWND keyboard_previous_foreground_ = nullptr;
+  DWORD keyboard_previous_process_ = 0;
+  DWORD keyboard_previous_thread_ = 0;
   bool start_hidden_ = false;
   bool autostart_ = false;
   bool prepared_ = false;
