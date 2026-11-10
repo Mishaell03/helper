@@ -6,6 +6,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/background_service.dart';
 import 'package:helper/hotkey_settings.dart';
+import 'package:helper/auto_hide_settings.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -23,6 +24,9 @@ void main() {
   var autostartFailure = false;
   var notificationEnabled = true;
   var notificationFailure = false;
+  var normalAutoHide = const AutoHideOption(seconds: 10);
+  var viewerAutoHide = const AutoHideOption(seconds: 30);
+  var autoHideFailure = false;
   var recording = false;
   var saves = 0;
   final visibilityCalls = <String>[];
@@ -42,6 +46,8 @@ void main() {
     'autostart': autostart,
     'startHidden': false,
     'slotNotificationEnabled': notificationEnabled,
+    'normalAutoHide': normalAutoHide.toMap(),
+    'viewerAutoHide': viewerAutoHide.toMap(),
   };
 
   setUp(() {
@@ -58,6 +64,9 @@ void main() {
     autostartFailure = false;
     notificationEnabled = true;
     notificationFailure = false;
+    normalAutoHide = const AutoHideOption(seconds: 10);
+    viewerAutoHide = const AutoHideOption(seconds: 30);
+    autoHideFailure = false;
     recording = false;
     saves = 0;
     visibilityCalls.clear();
@@ -112,6 +121,23 @@ void main() {
                 );
               }
               return state();
+            case 'setAutoHideSettings':
+              if (autoHideFailure) {
+                throw PlatformException(
+                  code: 'storage_error',
+                  message: 'Ошибка сохранения автоскрытия.',
+                );
+              }
+              final args = call.arguments as Map<Object?, Object?>;
+              normalAutoHide = AutoHideOption.fromMap(
+                args['normalAutoHide'],
+                10,
+              );
+              viewerAutoHide = AutoHideOption.fromMap(
+                args['viewerAutoHide'],
+                30,
+              );
+              return state();
             case 'setSlotNotificationEnabled':
               if (notificationFailure) {
                 throw PlatformException(
@@ -154,6 +180,107 @@ void main() {
   }
 
   Finder preference(String label) => find.widgetWithText(SwitchListTile, label);
+
+  test(
+    'Автоскрытие: значения по умолчанию, диапазон и независимость',
+    () async {
+      final legacy = state()
+        ..remove('normalAutoHide')
+        ..remove('viewerAutoHide');
+      final defaults = BackgroundSettings.fromMap(legacy);
+      expect(defaults.normalAutoHide.enabled, isTrue);
+      expect(defaults.normalAutoHide.seconds, 10);
+      expect(defaults.viewerAutoHide.enabled, isTrue);
+      expect(defaults.viewerAutoHide.seconds, 30);
+      expect(AutoHideOption.durations, [
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+      ]);
+      final service = BackgroundService.instance;
+      var saved = await service.setAutoHideSettings(
+        const AutoHideOption(enabled: false, seconds: 10),
+        const AutoHideOption(seconds: 45),
+      );
+      expect(saved.normalAutoHide.enabled, isFalse);
+      expect(saved.viewerAutoHide.seconds, 45);
+      saved = await service.setAutoHideSettings(
+        const AutoHideOption(seconds: 60),
+        const AutoHideOption(enabled: false, seconds: 45),
+      );
+      expect(saved.normalAutoHide.seconds, 60);
+      expect(saved.normalAutoHide.enabled, isTrue);
+      expect(saved.viewerAutoHide.enabled, isFalse);
+      for (final invalid in [0, 5, 11, 61, 65]) {
+        await expectLater(
+          service.setAutoHideSettings(
+            AutoHideOption(seconds: invalid),
+            saved.viewerAutoHide,
+          ),
+          throwsFormatException,
+        );
+      }
+      expect(
+        AutoHideOption.fromMap({'enabled': false, 'seconds': 11}, 30).seconds,
+        30,
+      );
+    },
+  );
+
+  testWidgets(
+    'Автоскрытие: отдельные переключатели, длительности, повторная загрузка и ошибка',
+    (tester) async {
+      await open(tester);
+      final normal = preference('Автоскрытие основного окна');
+      final viewer = preference('Автоскрытие просмотра текста');
+      await tester.ensureVisible(normal);
+      await tester.tap(normal);
+      await tester.pumpAndSettle();
+      expect(normalAutoHide.enabled, isFalse);
+      expect(viewerAutoHide.enabled, isTrue);
+      expect(
+        tester
+            .widget<DropdownButton<int>>(
+              find.byKey(const ValueKey('normalAutoHideSeconds')),
+            )
+            .onChanged,
+        isNull,
+      );
+      final duration = find.byKey(const ValueKey('viewerAutoHideSeconds'));
+      await tester.ensureVisible(duration);
+      expect(
+        tester
+            .widget<DropdownButton<int>>(duration)
+            .items!
+            .map((item) => item.value),
+        AutoHideOption.durations,
+      );
+      await tester.tap(duration);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('45 с').last);
+      await tester.pumpAndSettle();
+      expect(viewerAutoHide.seconds, 45);
+      expect(normalAutoHide.enabled, isFalse);
+      autoHideFailure = true;
+      await tester.ensureVisible(viewer);
+      await tester.tap(viewer);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(viewer).value, isTrue);
+      expect(find.text('Ошибка сохранения автоскрытия.'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await open(tester);
+      expect(tester.widget<SwitchListTile>(normal).value, isFalse);
+      expect(tester.widget<DropdownButton<int>>(duration).value, 45);
+    },
+  );
 
   test('Старые настройки включают подсказку по умолчанию', () {
     final legacy = state()..remove('slotNotificationEnabled');

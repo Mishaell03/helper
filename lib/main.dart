@@ -10,6 +10,7 @@ import 'panel_theme.dart';
 import 'ordinary_cursor.dart';
 import 'automation/text_automation.dart';
 import 'ui_heartbeat.dart';
+import 'auto_hide_activity.dart';
 
 UiHeartbeat? _heartbeat;
 
@@ -49,12 +50,25 @@ Future<void> main() async {
   }
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key, this.controller, this.pickFiles, this.automation});
 
   final MarkdownController? controller;
   final Future<List<String>> Function()? pickFiles;
   final TextAutomationController? automation;
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  final _autoHideObserver = AutoHideModalObserver();
+
+  @override
+  void dispose() {
+    if (isWindows) _autoHideObserver.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -64,11 +78,14 @@ class MyApp extends StatelessWidget {
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     debugShowCheckedModeBanner: false,
     theme: buildPanelTheme(),
-    builder: (context, child) => OrdinaryCursor(child: child!),
+    navigatorObservers: isWindows ? [_autoHideObserver] : [],
+    builder: (context, child) => OrdinaryCursor(
+      child: isWindows ? AutoHideActivity(child: child!) : child!,
+    ),
     home: MarkdownPanel(
-      controller: controller,
-      pickFiles: pickFiles,
-      automation: automation,
+      controller: widget.controller,
+      pickFiles: widget.pickFiles,
+      automation: widget.automation,
     ),
   );
 }

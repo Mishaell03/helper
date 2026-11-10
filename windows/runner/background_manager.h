@@ -18,6 +18,7 @@
 #include "window_watchdog.h"
 #include "slot_navigation_policy.h"
 #include "slot_notification.h"
+#include "auto_hide_policy.h"
 
 // Also used by a second launch to reveal the existing process.
 constexpr UINT kShowHelper = WM_APP + 42;
@@ -48,6 +49,10 @@ class BackgroundManager {
   static constexpr size_t kActionCount = 8;
   static std::array<Shortcut, kActionCount> DefaultShortcuts();
   bool ResetApplicationSettings(std::string* error);
+  void LoadAutoHideSettings();
+  bool SaveAutoHideSettings(const Map& args, std::string* error);
+  void SyncAutoHide(bool activity = false);
+  void ArmAutoHide();
   bool Apply(const std::array<Shortcut, kActionCount>& shortcuts, bool persist,
               std::string* error);
   bool ValidAll(const std::array<Shortcut, kActionCount>& shortcuts) const;
@@ -87,6 +92,11 @@ class BackgroundManager {
   bool composition_ready_ = false;
   bool recording_ = false;
   bool resetting_data_ = false;
+  AutoHidePolicy auto_hide_;
+  bool auto_hide_viewer_ = false;
+  bool auto_hide_flutter_suspended_ = true;
+  bool auto_hide_modal_ = false;
+  bool auto_hide_pointer_held_ = false;
   bool keyboard_activation_ = false;
   HWND keyboard_previous_foreground_ = nullptr;
   DWORD keyboard_previous_process_ = 0;

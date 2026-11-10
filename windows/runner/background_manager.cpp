@@ -33,6 +33,8 @@ constexpr int kSlotToggleId = 0x4801;
 constexpr int kSlotPreviousId = 0x4802;
 constexpr int kSlotNextId = 0x4803;
 constexpr int kViewerEscapeId = 0x4804;
+constexpr UINT_PTR kAutoHideTimer = 0x4805;
+constexpr wchar_t kAutoHideValue[] = L"AutoHideV1";
 double WindowScale(HWND window) {
   const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
   return FlutterDesktopGetDpiForMonitor(monitor) / 96.0;
@@ -137,6 +139,7 @@ BackgroundManager::BackgroundManager(HWND window,
     }
   }
   LoadAutostart();
+  LoadAutoHideSettings();
   automation_ = std::make_unique<TextAutomation>(window_, messenger,
       [this](UINT key, UINT modifiers) { return DispatchControlHotkey(key, modifiers); },
       [this]() { return bindings_[4].id != 0; },
@@ -154,12 +157,49 @@ BackgroundManager::BackgroundManager(HWND window,
   });
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const auto& method = call.method_name();
-    if (resetting_data_ && (method == "saveSettings" || method == "setAutostart" ||
+    if (resetting_data_ && (method == "setAutoHideSettings" || method == "saveSettings" ||
+        method == "setAutostart" ||
         method == "setSlotNotificationEnabled" || method == "setRecording")) {
       result->Error("storage_error", "Дождитесь завершения удаления данных приложения.");
       return;
     }
-    if (method == "getSettings") {
+    if (method == "helperActivity") {
+      SyncAutoHide(true);
+      result->Success();
+    } else if (method == "setAutoHideContext") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      if (!args) {
+        result->Error("invalid_argument", "Не указано состояние автоскрытия.");
+        return;
+      }
+      const auto viewer = args->find(Value("viewer"));
+      const auto suspended = args->find(Value("suspended"));
+      if (viewer == args->end() || suspended == args->end() ||
+          !std::get_if<bool>(&viewer->second) || !std::get_if<bool>(&suspended->second)) {
+        result->Error("invalid_argument", "Некорректное состояние автоскрытия.");
+        return;
+      }
+      auto_hide_viewer_ = std::get<bool>(viewer->second);
+      auto_hide_flutter_suspended_ = std::get<bool>(suspended->second);
+      SyncAutoHide();
+      result->Success();
+    } else if (method == "setAutoHideModalOpen" || method == "setAutoHidePointerHeld") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      if (!enabled) {
+        result->Error("invalid_argument", "Ожидается состояние взаимодействия с Helper.");
+        return;
+      }
+      if (method == "setAutoHideModalOpen") auto_hide_modal_ = *enabled;
+      else auto_hide_pointer_held_ = *enabled;
+      SyncAutoHide();
+      result->Success();
+    } else if (method == "setAutoHideSettings") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      std::string error;
+      if (!args) result->Error("invalid_argument", "Не указаны настройки автоскрытия.");
+      else if (!SaveAutoHideSettings(*args, &error)) result->Error("storage_error", error);
+      else result->Success(State());
+    } else if (method == "getSettings") {
       result->Success(State());
     } else if (method == "selectedBlockChanged") {
       const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
@@ -272,6 +312,7 @@ BackgroundManager::BackgroundManager(HWND window,
         return;
       }
       resetting_data_ = *enabled;
+      SyncAutoHide();
       if (resetting_data_) {
         automation_->Stop();
         slot_notification_->Dismiss();
@@ -295,6 +336,7 @@ BackgroundManager::BackgroundManager(HWND window,
         return;
       }
       recording_ = *enabled;
+      SyncAutoHide();
       UpdateSlotNavigation();
       UpdateViewerEscape();
       result->Success();
@@ -360,6 +402,7 @@ BackgroundManager::BackgroundManager(HWND window,
 }
 
 BackgroundManager::~BackgroundManager() {
+  KillTimer(window_, kAutoHideTimer);
   slot_notification_.reset();
   if (update_process_) CloseHandle(update_process_); // Do not kill committed updater.
   watchdog_.reset();
@@ -616,12 +659,94 @@ BackgroundManager::Value BackgroundManager::State() const {
   };
   Map state{{Value("active"), Value(std::all_of(bindings_.begin(), bindings_.begin() + 5,
                      [](const Binding& b) { return b.id != 0; }))},
-                   {Value("autostart"), Value(autostart_)},
+                    {Value("normalAutoHide"), Value(Map{
+                        {Value("enabled"), Value(auto_hide_.normal.enabled)},
+                        {Value("seconds"), Value(static_cast<int32_t>(auto_hide_.normal.seconds))}})},
+                    {Value("viewerAutoHide"), Value(Map{
+                        {Value("enabled"), Value(auto_hide_.viewer.enabled)},
+                        {Value("seconds"), Value(static_cast<int32_t>(auto_hide_.viewer.seconds))}})},
+                    {Value("autostart"), Value(autostart_)},
                    {Value("startHidden"), Value(start_hidden_)},
                    {Value("slotNotificationEnabled"), Value(slot_notification_->enabled())},
                    {Value("warning"), Value(startup_error_ + slot_warnings_[0] + slot_warnings_[1] + slot_notification_->warning())}};
   for (size_t i = 0; i < bindings_.size(); ++i) state[Value(kActionNames[i])] = encode(bindings_[i].shortcut);
   return Value(state);
+}
+
+void BackgroundManager::LoadAutoHideSettings() {
+  DWORD values[5]{};
+  DWORD size = sizeof(values);
+  const LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, kWindowPath, kAutoHideValue,
+      RRF_RT_REG_BINARY, nullptr, values, &size);
+  if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) return;
+  if (status == ERROR_SUCCESS && size == sizeof(values) && values[0] == 1) {
+    const bool normal_valid = values[1] <= 1 && ValidAutoHideSeconds(values[2]);
+    const bool viewer_valid = values[3] <= 1 && ValidAutoHideSeconds(values[4]);
+    auto_hide_.Configure(GetTickCount64(),
+        normal_valid ? AutoHideOption{values[1] != 0, values[2]} : AutoHideOption{},
+        viewer_valid ? AutoHideOption{values[3] != 0, values[4]} : AutoHideOption{true, 30});
+    if (normal_valid && viewer_valid) return;
+  }
+  startup_error_ += "Не удалось прочитать автоскрытие. Некорректные настройки заменены значениями по умолчанию. ";
+}
+
+bool BackgroundManager::SaveAutoHideSettings(const Map& args, std::string* error) {
+  auto read = [&](const char* name, AutoHideOption* option) {
+    const auto found = args.find(Value(name));
+    const auto* map = found == args.end() ? nullptr : std::get_if<Map>(&found->second);
+    if (!map) return false;
+    const auto enabled = map->find(Value("enabled"));
+    const auto* flag = enabled == map->end() ? nullptr : std::get_if<bool>(&enabled->second);
+    const auto seconds = MapInteger(*map, "seconds");
+    if (!flag || seconds < 10 || seconds > 60 ||
+        !ValidAutoHideSeconds(static_cast<uint32_t>(seconds))) return false;
+    *option = {*flag, static_cast<uint32_t>(seconds)};
+    return true;
+  };
+  AutoHideOption normal, viewer;
+  if (!read("normalAutoHide", &normal) || !read("viewerAutoHide", &viewer)) {
+    *error = "Выберите время автоскрытия от 10 до 60 секунд с шагом 5 секунд.";
+    return false;
+  }
+  const DWORD values[] = {1, normal.enabled ? 1u : 0u, normal.seconds,
+                            viewer.enabled ? 1u : 0u, viewer.seconds};
+  HKEY key = nullptr;
+  LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, kWindowPath, 0, nullptr,
+      0, KEY_SET_VALUE, nullptr, &key, nullptr);
+  if (status == ERROR_SUCCESS) {
+    status = RegSetValueExW(key, kAutoHideValue, 0, REG_BINARY,
+        reinterpret_cast<const BYTE*>(values), sizeof(values));
+    RegCloseKey(key);
+  }
+  if (status != ERROR_SUCCESS) {
+    *error = WinError("Не удалось сохранить автоскрытие", status);
+    return false;
+  }
+  auto_hide_.Configure(GetTickCount64(), normal, viewer);
+  SyncAutoHide();
+  return true;
+}
+
+void BackgroundManager::SyncAutoHide(bool activity) {
+  const auto now = GetTickCount64();
+  auto_hide_.Context(now, SlotWindowVisible(), auto_hide_viewer_,
+      auto_hide_flutter_suspended_ || auto_hide_modal_ || auto_hide_pointer_held_ ||
+      recording_ || resetting_data_ || in_move_size_loop_ || import_dialog_.Get() != nullptr);
+  if (activity) auto_hide_.Activity(now);
+  ArmAutoHide();
+}
+
+void BackgroundManager::ArmAutoHide() {
+  KillTimer(window_, kAutoHideTimer);
+  const auto now = GetTickCount64();
+  const UINT remaining = auto_hide_.Remaining(now);
+  if (!remaining && !auto_hide_.expired(now)) return;
+  const UINT interval = (std::max)(remaining, static_cast<UINT>(USER_TIMER_MINIMUM));
+  if (!SetTimer(window_, kAutoHideTimer, interval, nullptr)) {
+    const std::string warning = "Не удалось запустить таймер автоскрытия Helper.";
+    std::cerr << warning << std::endl;
+    channel_->InvokeMethod("warning", std::make_unique<Value>(warning));
+  }
 }
 
 bool BackgroundManager::ResetApplicationSettings(std::string* error) {
@@ -646,6 +771,8 @@ bool BackgroundManager::ResetApplicationSettings(std::string* error) {
   start_hidden_ = false;
   startup_error_.clear();
   slot_warnings_[1].clear();
+  auto_hide_.Configure(GetTickCount64(), AutoHideOption{}, AutoHideOption{true, 30});
+  SyncAutoHide();
   RestoreSize();
   return true;
 }
@@ -765,6 +892,8 @@ void BackgroundManager::HideForTaskView() {
 }
 
 void BackgroundManager::Hide(bool persist_size) {
+  auto_hide_.Context(GetTickCount64(), false, auto_hide_viewer_, true);
+  KillTimer(window_, kAutoHideTimer);
   if (watchdog_) watchdog_->SetVisible(false);
   TraceCapture("hide.begin", window_, hidden_, parking_.parked());
   visibility_.Hide();
@@ -838,6 +967,7 @@ bool BackgroundManager::ShowWindowSafely() {
   }
   hidden_ = !IsWindowVisible(window_) || IsIconic(window_);
   if (hidden_) return false;
+  SyncAutoHide(true);
   UpdateViewerEscape();
   if (watchdog_) watchdog_->SetVisible(true);
   PostMessage(window_, kRefreshHelperFrame, 0, 0);
@@ -884,11 +1014,13 @@ void BackgroundManager::PickMarkdownFiles(
   if (SUCCEEDED(status)) status = import_dialog_->SetFileTypes(ARRAYSIZE(filters), filters);
   if (SUCCEEDED(status)) status = import_dialog_->SetTitle(L"Импорт текстовых блоков");
   if (SUCCEEDED(status)) status = import_dialog_->SetOkButtonLabel(L"Импортировать");
+  SyncAutoHide();
   if (SUCCEEDED(status)) {
     CaptureDialogScope capture_scope;
     const bool was_keyboard_active = keyboard_activation_;
     if (!SetKeyboardActivation(true)) {
       import_dialog_.Reset();
+      SyncAutoHide();
       UpdateSlotNavigation();
       UpdateViewerEscape();
       result->Error("window_activation_error", "Не удалось активировать диалог импорта.");
@@ -928,6 +1060,8 @@ void BackgroundManager::PickMarkdownFiles(
     }
   }
   import_dialog_.Reset();
+  auto_hide_pointer_held_ = false; // Mouse release belongs to the native dialog.
+  SyncAutoHide();
   UpdateSlotNavigation();
   UpdateViewerEscape();
   if (!activation_restored) {
@@ -1063,17 +1197,27 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     slot_navigation_.Hide();
     ReleaseSlotNavigation();
     ReleaseViewerEscape();
+    auto_hide_.Context(GetTickCount64(), false, auto_hide_viewer_, true);
+    KillTimer(window_, kAutoHideTimer);
   } else if ((message == WM_SIZE || message == WM_SHOWWINDOW) && SlotWindowVisible()) {
     if (slot_notification_) slot_notification_->Dismiss();
     UpdateSlotNavigation();
     UpdateViewerEscape();
+    SyncAutoHide();
   }
   if (message == WM_ENTERSIZEMOVE || message == WM_EXITSIZEMOVE) {
     in_move_size_loop_ = message == WM_ENTERSIZEMOVE;
+    if (!in_move_size_loop_) auto_hide_pointer_held_ = false;
+    SyncAutoHide();
     UpdateViewerEscape();
     if (watchdog_) watchdog_->SetMoveSizeLoop(in_move_size_loop_);
     TraceCapture(in_move_size_loop_ ? "resize.begin" : "resize.end",
                  window_, hidden_, parking_.parked());
+  }
+  if (message == WM_TIMER && wparam == kAutoHideTimer) {
+    SyncAutoHide();
+    if (auto_hide_.expired(GetTickCount64())) Hide();
+    return true;
   }
   if (message == WM_TIMER && wparam == kWatchdogNativeTimer) {
     if (watchdog_) watchdog_->NativePulse();
@@ -1195,6 +1339,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
   }
   if (wparam == kSlotToggleId && slot_toggle_registered_ &&
       modifiers == bindings_[5].shortcut.modifiers && key == bindings_[5].shortcut.key) {
+    SyncAutoHide(true);
     if (recording_ && GetForegroundWindow() == window_) {
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{
           {Value("modifiers"), Value(static_cast<int32_t>(modifiers))},
@@ -1221,6 +1366,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     if (!b.id || wparam != static_cast<WPARAM>(b.id) ||
         modifiers != b.shortcut.modifiers || key != b.shortcut.key)
       continue;
+    SyncAutoHide(true);
     if (recording_ && GetForegroundWindow() == window_) {
       if (i == 4) automation_->Stop();
       channel_->InvokeMethod("recorded", std::make_unique<Value>(Map{

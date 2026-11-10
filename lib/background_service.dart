@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'auto_hide_settings.dart';
 
 class Hotkey {
   const Hotkey(this.modifiers, this.key);
@@ -186,7 +187,9 @@ class BackgroundSettings {
       warning = map['warning'] as String,
       autostart = map['autostart'] as bool,
       startHidden = map['startHidden'] as bool,
-      slotNotificationEnabled = map['slotNotificationEnabled'] as bool? ?? true;
+      slotNotificationEnabled = map['slotNotificationEnabled'] as bool? ?? true,
+      normalAutoHide = AutoHideOption.fromMap(map['normalAutoHide'], 10),
+      viewerAutoHide = AutoHideOption.fromMap(map['viewerAutoHide'], 30);
 
   final Hotkey toggle;
   final Hotkey exit;
@@ -211,6 +214,8 @@ class BackgroundSettings {
   final bool autostart;
   final bool startHidden;
   final bool slotNotificationEnabled;
+  final AutoHideOption normalAutoHide;
+  final AutoHideOption viewerAutoHide;
 }
 
 class BackgroundService {
@@ -290,6 +295,37 @@ class BackgroundService {
 
   Future<void> setRecording(bool enabled) =>
       _channel.invokeMethod<void>('setRecording', enabled);
+  Future<void> helperActivity() =>
+      _channel.invokeMethod<void>('helperActivity');
+  Future<void> setAutoHideContext({
+    required bool viewer,
+    required bool suspended,
+  }) => _channel.invokeMethod<void>('setAutoHideContext', {
+    'viewer': viewer,
+    'suspended': suspended,
+  });
+  Future<void> setAutoHideModalOpen(bool value) =>
+      _channel.invokeMethod<void>('setAutoHideModalOpen', value);
+  Future<void> setAutoHidePointerHeld(bool value) =>
+      _channel.invokeMethod<void>('setAutoHidePointerHeld', value);
+  Future<BackgroundSettings> setAutoHideSettings(
+    AutoHideOption normal,
+    AutoHideOption viewer,
+  ) async {
+    if (!AutoHideOption.durations.contains(normal.seconds) ||
+        !AutoHideOption.durations.contains(viewer.seconds)) {
+      throw const FormatException(
+        'Выберите время от 10 до 60 секунд с шагом 5 секунд.',
+      );
+    }
+    return BackgroundSettings.fromMap(
+      (await _channel.invokeMapMethod<Object?, Object?>('setAutoHideSettings', {
+        'normalAutoHide': normal.toMap(),
+        'viewerAutoHide': viewer.toMap(),
+      }))!,
+    );
+  }
+
   Future<void> resetApplicationSettings() =>
       _channel.invokeMethod<void>('resetApplicationSettings');
   Future<void> setDataResetting(bool enabled) =>

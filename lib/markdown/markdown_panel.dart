@@ -65,6 +65,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   Timer? _notificationTimer;
   bool _pointerInside = false;
   bool? _viewerEscapeEnabled;
+  (bool, bool)? _autoHideContext;
   static const _cardExtent = BlockCard.extent;
 
   List<BlockSummary> get _blocks => (_controller?.blocks ?? [])
@@ -113,6 +114,29 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       ) {
         if (mounted) _notify(backgroundError(error));
       }),
+    );
+  }
+
+  void _helperActivity() {
+    if (!isWindows) return;
+    unawaited(
+      BackgroundService.instance.helperActivity().catchError((Object error) {
+        if (mounted) _notify(backgroundError(error));
+      }),
+    );
+  }
+
+  void _syncAutoHideContext() {
+    if (!isWindows) return;
+    final next = (_opened != null, _busy);
+    if (_autoHideContext == next) return;
+    _autoHideContext = next;
+    unawaited(
+      BackgroundService.instance
+          .setAutoHideContext(viewer: next.$1, suspended: next.$2)
+          .catchError((Object error) {
+            if (mounted) _notify(backgroundError(error));
+          }),
     );
   }
 
@@ -316,6 +340,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   void _navigate(_View view, {_SettingsTab? tab}) {
+    _helperActivity();
     ++_openGeneration;
     setState(() {
       _opening = false;
@@ -412,6 +437,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   Future<void> _open(BlockSummary block, {bool requestFocus = true}) async {
+    _helperActivity();
     if (_busy || _controller == null) return;
     final generation = ++_openGeneration;
     setState(() {
@@ -491,6 +517,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       });
 
   void _back() {
+    _helperActivity();
     ++_openGeneration;
     if (_opened != null || _opening) {
       setState(() {
@@ -547,6 +574,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   BlockSummary? _selectRelative(int delta) {
+    _helperActivity();
     final blocks = _blocks;
     if (blocks.isEmpty) return null;
     final index = blocks.indexWhere((block) => block.id == _selected);
@@ -713,6 +741,13 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   @override
   void dispose() {
+    if (isWindows) {
+      unawaited(
+        BackgroundService.instance
+            .setAutoHideContext(viewer: false, suspended: true)
+            .catchError((Object _) {}),
+      );
+    }
     _notificationTimer?.cancel();
     ++_openGeneration;
     if (isWindows) {
@@ -751,6 +786,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   @override
   Widget build(BuildContext context) {
+    _syncAutoHideContext();
     final panel = Scaffold(
       body: Focus(
         focusNode: _focus,
@@ -1027,6 +1063,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   void _selectSlot(BlockSummary block) {
+    _helperActivity();
     if (_busy) return;
     setState(() => _updateSelection(block));
     _focus.requestFocus();

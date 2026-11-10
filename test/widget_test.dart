@@ -24,6 +24,7 @@ void main() {
   final viewerEscapeRequests = <bool>[];
   final selectionNotifications = <Map<Object?, Object?>>[];
   final resetCalls = <String>[];
+  final autoHideContexts = <Map<Object?, Object?>>[];
   var resetFailure = false;
 
   setUp(() async {
@@ -37,6 +38,7 @@ void main() {
     viewerEscapeRequests.clear();
     selectionNotifications.clear();
     resetCalls.clear();
+    autoHideContexts.clear();
     resetFailure = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
@@ -67,6 +69,9 @@ void main() {
         ) async {
           if (call.method == 'setDataResetting') {
             resetCalls.add('gate:${call.arguments}');
+          }
+          if (call.method == 'setAutoHideContext') {
+            autoHideContexts.add(call.arguments as Map<Object?, Object?>);
           }
           if (call.method == 'resetApplicationSettings') {
             resetCalls.add('reset');
@@ -223,6 +228,30 @@ void main() {
       expect(selectedSlot(tester), id);
       expect(selectionNotifications, isEmpty);
       await tester.pumpWidget(const SizedBox());
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets(
+    'Автоскрытие получает контекст просмотра и не сбрасывается перестроением',
+    (tester) async {
+      final input = await file(tester, 'view.md', '# Блок\n\nТекст');
+      await open(tester, paths: [input.path]);
+      await importFiles(tester);
+      expect(autoHideContexts.last, {'viewer': false, 'suspended': false});
+      autoHideContexts.clear();
+      await tester.runAsync(controller.load);
+      await settle(tester);
+      expect(autoHideContexts, isEmpty);
+      await doubleTap(tester, find.text('Блок'));
+      await settle(tester);
+      expect(autoHideContexts.last, {'viewer': true, 'suspended': false});
+      await tester.tap(find.byTooltip('Назад (Esc)'));
+      await settle(tester);
+      expect(autoHideContexts.last, {'viewer': false, 'suspended': false});
+      expect(automationStarts, 0);
+      await tester.pumpWidget(const SizedBox());
+      expect(autoHideContexts.last, {'viewer': false, 'suspended': true});
     },
     variant: TargetPlatformVariant.only(TargetPlatform.windows),
   );
@@ -814,7 +843,7 @@ void main() {
       final switches = find.byKey(const Key('preferencesSwitches'));
       expect(
         find.descendant(of: switches, matching: find.byType(SwitchListTile)),
-        findsNWidgets(3),
+        findsNWidgets(5),
       );
       expect(
         tester.getTopLeft(find.byKey(const Key('typingSpeed'))).dy,
@@ -868,6 +897,8 @@ void main() {
       expect(controller.blocks, hasLength(1));
       expect(resetCalls, ['gate:true', 'reset', 'gate:false']);
       expect(find.textContaining('Сброс не завершён.'), findsOneWidget);
+      await tester.tap(find.widgetWithText(SnackBarAction, 'Закрыть'));
+      await tester.pumpAndSettle();
       resetCalls.clear();
       resetFailure = false;
       await confirmReset();
