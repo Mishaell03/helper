@@ -5,6 +5,7 @@ import 'package:path/path.dart' as path;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'models.dart';
+import 'markdown_schema.dart';
 import '../background_service.dart';
 import '../automation/typing_speed.dart';
 
@@ -38,59 +39,30 @@ class MarkdownRepository {
       databasePath = path.join(directory, 'markdown_helper.sqlite3');
     }
     // sqflite_common_ffi dispatches SQL work to its database worker isolate.
-    final database = await databaseFactoryFfi.openDatabase(
-      databasePath,
-      options: OpenDatabaseOptions(
-        version: 3,
-        onConfigure: (db) async {
-          await db.execute('PRAGMA foreign_keys = ON');
-          await db.execute('PRAGMA busy_timeout = 5000');
-        },
-        onCreate: (db, _) async {
-          await db.execute('''CREATE TABLE imported_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT NOT NULL,
-            imported_at INTEGER NOT NULL,
-            block_count INTEGER NOT NULL,
-            original_content TEXT NOT NULL,
-            original_bytes BLOB NOT NULL
-          )''');
-          await db.execute('''CREATE TABLE blocks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_id INTEGER NOT NULL REFERENCES imported_files(id) ON DELETE CASCADE,
-            position INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
-            content TEXT NOT NULL,
-            source TEXT NOT NULL,
-            pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
-            archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
-            insertion_completed INTEGER NOT NULL DEFAULT 0 CHECK(insertion_completed IN (0, 1)),
-            UNIQUE(file_id, position)
-          )''');
-          await db.execute('CREATE INDEX blocks_file ON blocks(file_id)');
-          await db.execute('''CREATE TABLE preferences (
-            key TEXT PRIMARY KEY, value TEXT NOT NULL
-          )''');
-        },
-        onUpgrade: (db, oldVersion, _) async {
-          if (oldVersion < 2) {
-            await db.execute(
-              'ALTER TABLE blocks ADD COLUMN archived INTEGER '
-              'NOT NULL DEFAULT 0 CHECK(archived IN (0, 1))',
-            );
-          }
-          if (oldVersion < 3) {
-            // Old archive flags do not distinguish manual actions from typing.
-            await db.execute(
-              'ALTER TABLE blocks ADD COLUMN insertion_completed INTEGER '
-              'NOT NULL DEFAULT 0 CHECK(insertion_completed IN (0, 1))',
-            );
-          }
-        },
-      ),
-    );
-    return MarkdownRepository._(database);
+    String? backup;
+    try {
+      final database = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(
+          version: MarkdownSchema.version,
+          onConfigure: (db) async {
+            await db.execute('PRAGMA foreign_keys = ON');
+            await db.execute('PRAGMA busy_timeout = 5000');
+            backup = await MarkdownSchema.prepare(db);
+          },
+          onCreate: (db, _) => MarkdownSchema.migrate(db),
+          onUpgrade: (db, _, _) => MarkdownSchema.migrate(db),
+          onOpen: (db) => db.transaction(MarkdownSchema.migrate),
+        ),
+      );
+      return MarkdownRepository._(database);
+    } on DatabaseException catch (error) {
+      throw FormatException(
+        'Не удалось открыть или обновить базу Helper. Автоматический сброс не выполнялся. '
+        '${backup == null ? '' : 'Резервная копия: $backup. '}'
+        'Причина SQLite: $error',
+      );
+    }
   }
 
   Future<int> importDocument(ImportedDocument document) =>
@@ -218,6 +190,21 @@ class MarkdownRepository {
       );
     });
     await _database.execute('VACUUM');
+    if (_database.path != inMemoryDatabasePath) {
+      // Only our generated snapshots of this database, never arbitrary user
+      // files or manually named backups in the same directory.
+      final snapshots = RegExp(
+        '^${RegExp.escape(path.basename(_database.path))}'
+        r'\.backup-v[0-9]+-to-v[0-9]+-[0-9]+\.sqlite3$',
+      );
+      await for (final file in Directory(
+        path.dirname(_database.path),
+      ).list(followLinks: false)) {
+        if (file is File && snapshots.hasMatch(path.basename(file.path))) {
+          await file.delete();
+        }
+      }
+    }
   }
 
   Future<void> _removeEmptyImports(Transaction transaction) =>
