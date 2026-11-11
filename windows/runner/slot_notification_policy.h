@@ -9,12 +9,29 @@ inline bool ShouldShowSlotNotification(bool enabled, bool main_visible, int64_t 
   return enabled && !main_visible && id > 0;
 }
 
+inline bool SlotNotificationCaptureSupported(uint32_t windows_build) {
+  return windows_build >= 19041;
+}
+
+// GetWindowDisplayAffinity documents a layered-window prerequisite. A standard
+// DWM HWND can accept Set(0x11) but report ERROR_INVALID_PARAMETER (87) or
+// ERROR_NOT_SUPPORTED (50) for Get. Only those documented-inapplicable readbacks
+// are accepted, and only after Set explicitly succeeded on this exact HWND.
+// A failed setter, a readable WDA_NONE/WDA_MONITOR, or Get error 8 is NOT accepted.
+inline bool SlotNotificationProtectionConfirmed(bool setter_succeeded, bool readable,
+    uint32_t affinity, uint32_t query_error, bool layered) {
+  if (!setter_succeeded) return false;
+  if (readable) return affinity == 0x11;
+  return !layered && (query_error == 87 || query_error == 50);
+}
+
 class SlotNotificationLifetime {
  public:
   static constexpr uint32_t kDurationMs = 2000;
   void Restart(uint64_t now) { deadline_ = now + kDurationMs; active_ = true; }
   void Dismiss() { active_ = false; }
   void SetDragging(bool dragging) { dragging_ = dragging; }
+  bool dragging() const { return dragging_; }
   bool ShouldHide(uint64_t now) const { return active_ && !dragging_ && Remaining(now) == 0; }
   uint32_t Remaining(uint64_t now) const {
     return active_ && now < deadline_ ? static_cast<uint32_t>(deadline_ - now) : 0;

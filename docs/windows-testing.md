@@ -31,17 +31,24 @@ Windows GUI/установленное обновление в текущем о
 
 ## Временная подсказка выбранного блока
 
-Для случая Win32 8 на Windows 10 сначала проверить начальную прозрачную
-поверхность без загрузки текста. Из Developer Command Prompt, каталог проекта:
+Для случая Win32 8 сначала сравнить прежний layered и новый DWM-рендер.
+Из Developer Command Prompt, каталог проекта (папка `build` должна существовать):
 
 ```bat
-cl /nologo /std:c++17 /EHsc /utf-8 /W4 /WX /wd4100 test\native\slot_notification_surface_test.cpp windows\runner\capture_exclusion.cpp user32.lib gdi32.lib /Fe:build\slot_notification_surface_test.exe /Fo:build\
+cl /nologo /std:c++17 /EHsc /utf-8 /W4 /WX /wd4100 test\native\slot_notification_surface_test.cpp windows\runner\capture_exclusion.cpp user32.lib gdi32.lib dwmapi.lib /Fe:build\slot_notification_surface_test.exe /Fo:build\
 build\slot_notification_surface_test.exe
 ```
 
-Тест использует тот же helper инициализации, проверяет отсутствие показа/активации,
-освобождение GDI-объектов и реальный результат affinity. При отказе возвращает 1,
-а не объявляет успех и не показывает незащищённое окно. Это не тест захвата OBS.
+Старая проба рисует только alpha-zero пиксель и печатает реальные результаты
+UpdateLayeredWindow/SetWindowDisplayAffinity. Ошибка старой пробы не считается
+успехом нового пути. Новый путь использует тот же production renderer, что Helper:
+проверяет защиту до paint, отсутствие layered/no-redirection стилей, показывает
+только несекретные синтетические пиксели, выполняет 32 обновления, проверяет
+HWND region для alpha-zero/частично прозрачных пикселей, фокус и GDI-ресурсы.
+Отказ нового Set/Get/DWM возвращает 1 без незащищённого показа. Для Get(87/50)
+на non-layered HWND допускается только подтверждённый успешный Set(0x11), как
+описано в troubleshooting. Windows ниже 19041 явно пропускаются без показа.
+Это не проверка захвата OBS и не визуальная проверка шрифта.
 **На текущем macOS этот Windows-тест не выполнялся.** Диагностика проблемного ПК
 описана в `docs/capture-troubleshooting.md`, раздел про Win32 8.
 
@@ -50,6 +57,9 @@ build\slot_notification_surface_test.exe
 
 1. Собрать `flutter build windows --release`. На Windows 10 2004 (19041)+ или
    Windows 11 импортировать несколько блоков: с кириллицей, эмодзи и длинным именем.
+   Перед запуском полностью выйти из всех старых Helper (проверить отсутствие
+   `helper.exe` в Диспетчере задач). Запустить именно новый EXE с
+   `--capture-diagnostics`, не копировать один EXE поверх старых DLL.
    Проверить реальный ID из карточки, формат `ID — имя`, многоточие. Формат без
    имени — только ID; при необходимости проверить через отладочный вызов канала
    `selectedBlockChanged` с `{'id': 42, 'name': ''}`.
@@ -86,6 +96,9 @@ build\slot_notification_surface_test.exe
    Windows Graphics Capture/Desktop Duplication: отдельно проверить отсутствие
    подсказки и главной панели. Не использовать конфиденциальный текст. Защита
    Win32 не гарантирует исключение для всех сторонних способов захвата.
+   Проверить именно сохранённое видео: до появления, во время и после исчезновения
+   подсказки, на первом и на 20-м показе. Если видны текст или чёрный силуэт/след,
+   проверка провалена, даже если API сообщает `0x11`. Повторить на Windows 11.
 9. На Windows старше ограничения (сборка ниже 19041) либо в отладчике с отказом
    `SetWindowDisplayAffinity` проверить: подсказка НЕ показывается; предупреждение
    приходит через существующий канал и доступно в настройках/диагностике stderr.
@@ -109,6 +122,10 @@ build\slot_notification_policy_test.exe
 не может преждевременно скрыть новое уведомление. Перетаскивание не меняет
 дедлайн, но откладывает скрытие до отпускания мыши. Размер шрифта уменьшен с
 16 до 14 DIP, внутренний отступ — с 3 до 2 DIP, максимальная ширина — 420 DIP.
+Дополнительный `test/native/slot_notification_pixels_test.cpp` проверяет
+alpha-маску (включая RGB != 0 при alpha=0), диапазоны ОС, запрет Set failure,
+WDA_NONE/WDA_MONITOR и ошибки Get=8, ограниченную обработку недоступного Get
+для не-layered окна и игнорирование stale last-error после успешного API.
 
 ## Независимое автоскрытие интерфейса и просмотра
 

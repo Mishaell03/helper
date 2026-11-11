@@ -6,6 +6,7 @@
 #include <string>
 
 #include "slot_notification_policy.h"
+#include "slot_notification_surface.h"
 
 // One UI-thread-owned HWND. Selection remains exclusively in Flutter.
 class SlotNotification {
@@ -30,8 +31,10 @@ class SlotNotification {
   static LRESULT CALLBACK WndProc(HWND window, UINT message, WPARAM wp, LPARAM lp);
   LRESULT HandleMessage(UINT message, WPARAM wp, LPARAM lp);
   bool Create();
-  bool Protect();
+  bool Protect(bool refresh = false);
   void ProtectionFailed();
+  void NativeFailed(const SlotSurfaceError& error);
+  bool Repaint();
   bool Render(HMONITOR monitor, const POINT* position = nullptr);
   HMONITOR TargetMonitor() const;
   void RefreshPosition();
@@ -42,7 +45,14 @@ class SlotNotification {
   HWND window_ = nullptr;
   ATOM window_class_ = 0;
   ULONG_PTR graphics_token_ = 0;
-  DWORD capture_error_ = ERROR_SUCCESS;
+  SlotSurfaceError native_error_;
+  SlotNotificationSurface surface_;
+  bool paint_ok_ = true;
+  bool rendering_ = false;
+  bool refresh_pending_ = false;
+  bool render_message_failed_ = false;
+  bool affinity_applied_ = false;
+  bool affinity_readback_noted_ = false;
   bool enabled_ = true;
   bool have_position_ = false;
   SavedPosition position_;

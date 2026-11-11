@@ -8,28 +8,69 @@
 не доказывает нехватку физической памяти — код может относиться к созданию
 защищённой поверхности DWM.
 
-В прежнем коде affinity запрашивалась у HWND 0×0 до первого `UpdateLayeredWindow`.
-Теперь окно создаётся ненулевого размера, получает начальную поверхность 1×1
-с полностью нулевым alpha **без текста и без показа**, затем применяется и
-проверяется `WDA_EXCLUDEFROMCAPTURE`. Только после успеха загружается текст;
-перед показом affinity проверяется ещё раз. Инициализация больше не зависит от
-первого кадра с конфиденциальным текстом. Это исправление порядка создания,
-а не подтверждение, что любая Windows 10/драйвер поддержит такую поверхность.
+Первая попытка исправления — начальная прозрачная поверхность 1×1 перед
+affinity — **не решила проблему по сообщению пользователя**. Причина отказа
+установлена до уровня API: общий helper считывает ошибку сразу после FALSE от
+`SetWindowDisplayAffinity`, до вывода/очистки ресурсов. Нельзя по одному коду 8
+утверждать точную внутреннюю причину DWM/драйвера или универсальный запрет layered
+окон на всех Windows 10. Старый код, однако, всегда выбирал проблемный на этом
+ПК путь `WS_EX_LAYERED + UpdateLayeredWindow`; смена порядка его не заменяла.
 
-Функция защиты главного окна работает как прежде; в общий helper добавлен только
-необязательный выходной параметр для точного кода ошибки. Нет перехода на
-`WDA_NONE`/`WDA_MONITOR`, показа без защиты, изменения OBS или внешних процессов.
+### Новый путь отображения
+
+Подсказка теперь использует обычный DWM-redirected `WS_POPUP` без `WS_EX_LAYERED`
+и без `WS_EX_NOREDIRECTIONBITMAP`, одинаковый по архитектуре на Windows 10/11.
+Нет `UpdateLayeredWindow`, `SetLayeredWindowAttributes`, цветового ключа или
+общей нулевой непрозрачности. DWM включает учёт alpha с пустой blur-областью,
+а GDI+ строит прежние premultiplied BGRA-пиксели. `WM_PAINT` копирует готовый
+32-битный top-down DIB через `BitBlt`, как в документированном text-on-glass пути
+Microsoft. Все фоновые пиксели имеют alpha=0. `SetWindowRgn` задаёт область
+только по ненулевому alpha текста/тени: фон прозрачен и не блокирует другие
+процессы. Перетаскивание за текст, DPI, прежние координаты и срок 2 с сохранены.
+
+Текст создаётся только после успешной установки **именно `0x11`** на собственный
+top-level HWND при работающем DWM и Windows build >=19041. При доступном чтении
+обязательно проверяется `GetWindowDisplayAffinity == 0x11`; значения 0 и 1 не
+принимаются. В документации Get есть отдельное ограничение для layered-окон:
+если у обычного не-layered HWND чтение возвращает `ERROR_INVALID_PARAMETER` (87)
+или `ERROR_NOT_SUPPORTED` (50), допускается подтверждение успешным Set(0x11)
+на этом же HWND. Это отмечается в диагностике, флаг защиты не меняется. Любой
+отказ Set, включая 8, и неожиданная ошибка Get, включая 8, запрещают показ.
+Документация не обещает именно эти коды для всех систем: другие ошибки чтения
+не игнорируются. Подтверждение Set хранится только до уничтожения HWND или
+переинициализации DWM, не переустанавливается при каждом `WM_PAINT`.
+
+Основное окно и его capture helper не изменены. Нет перехода на
+`WDA_NONE`/`WDA_MONITOR`, показа после отказа защиты, задержек/повторов API,
+изменения OBS или внешних процессов.
+
+### Диагностика и границы подтверждения
 
 Проверить новую **полную Windows-сборку** на проблемном ПК (не hot reload).
-Если ошибка останется, запустить с `--capture-diagnostics`, переключить несколько
-слотов при скрытом Helper и прислать последний `capture-*.log` из
-`%LOCALAPPDATA%\Helper\Diagnostics`. В нём появились события
-`slot_notification.surface_ready`, `slot_notification.protected`,
-`slot_notification.protection_failed` и `slot_notification.show`, HWND, build
-Windows, стили и код отказа. Тексты блоков в журнал не записываются. Если после
-`surface_ready` снова следует Win32 8, нужен разбор совместимости именно на этом
-ПК; подавление предупреждения не обеспечит защиту. Windows GUI/OBS здесь не
-проверялись, поэтому подтверждать исправление на Windows 10 пока нельзя.
+Запустить с `--capture-diagnostics`, переключить несколько слотов при скрытом
+Helper и сохранить последний `capture-*.log` из
+`%LOCALAPPDATA%\Helper\Diagnostics`. Новый заголовок — `Helper capture diagnostics v4`.
+События: `slot_notification.dwm_surface_ready`, `slot_notification.frame_ready`,
+`slot_notification.protected`, `slot_notification.show/hide/failure`. В журнале
+есть HWND validity, PID/стили, DWM state/HRESULT, версия/build Windows, affinity,
+точный API, непосредственный Win32-код и системная расшифровка. GDI+ ошибки
+записываются как GDI+ Status, HRESULT — как HRESULT; `ShowWindow` не считается
+ошибкой из-за возвращённого FALSE (это предыдущее состояние видимости).
+Текст блока и пиксели не записываются; успешные кадры WM_PAINT не засоряют журнал.
+
+`test/native/slot_notification_surface_test.cpp` сравнивает старый blank-layered
+путь с новым DWM-путём на настоящих HWND; это способ проверить гипотезу на
+проблемном компьютере, а не доказательство выполненной Windows-проверки.
+На macOS выполнены только переносимые тесты. **Windows 10/11 GUI, новый native
+тест и OBS ещё требуют проверки; считать пользовательский дефект полностью
+устранённым до этого нельзя.** Если новый путь тоже отказывает, журнал покажет
+отдельно Set, Get, DWM, GDI+, геометрию или paint, без ложной общей ошибки защиты.
+
+Использованные контракты Microsoft:
+- [SetWindowDisplayAffinity](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)
+- [GetWindowDisplayAffinity](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowdisplayaffinity)
+- [Alpha и DWM](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmenableblurbehindwindow)
+- [DIB/BitBlt text-on-glass, Appendix B](https://learn.microsoft.com/en-us/windows/win32/dwm/customframe#appendix-b-painting-the-caption-title)
 
 ## Подтверждённое воспроизведение на Windows 10
 
@@ -76,7 +117,7 @@ explorer.exe "$env:LOCALAPPDATA\Helper\Diagnostics"
 Прислать последний `capture-*.log`. Он содержит версию сборки, build Windows,
 `stable_surface`, события показа/скрытия/изменения позиции, HWND, координаты,
 стили, affinity, cloak и состояние фокуса. Файл заполняется даже без ошибок API.
-В версии с watchdog заголовок начинается с `Helper capture diagnostics v3` (раньше `v2`), на Windows 10
+Текущий заголовок начинается с `Helper capture diagnostics v4` (раньше `v3`/`v2`), на Windows 10
 ожидаются `stable_surface=1` и `hide.parked`. Если заголовка нет, проверить, что
 запускается именно новая сборка и что предыдущий процесс был завершён.
 Тексты блоков, нажатия клавиш и скриншоты в этот журнал не записываются.
