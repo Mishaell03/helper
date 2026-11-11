@@ -31,6 +31,7 @@ class SlotNotification {
   LRESULT HandleMessage(UINT message, WPARAM wp, LPARAM lp);
   bool Create();
   bool Protect();
+  void ProtectionFailed();
   bool Render(HMONITOR monitor, const POINT* position = nullptr);
   HMONITOR TargetMonitor() const;
   void RefreshPosition();
@@ -41,6 +42,7 @@ class SlotNotification {
   HWND window_ = nullptr;
   ATOM window_class_ = 0;
   ULONG_PTR graphics_token_ = 0;
+  DWORD capture_error_ = ERROR_SUCCESS;
   bool enabled_ = true;
   bool have_position_ = false;
   SavedPosition position_;

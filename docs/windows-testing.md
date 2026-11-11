@@ -31,6 +31,20 @@ Windows GUI/установленное обновление в текущем о
 
 ## Временная подсказка выбранного блока
 
+Для случая Win32 8 на Windows 10 сначала проверить начальную прозрачную
+поверхность без загрузки текста. Из Developer Command Prompt, каталог проекта:
+
+```bat
+cl /nologo /std:c++17 /EHsc /utf-8 /W4 /WX /wd4100 test\native\slot_notification_surface_test.cpp windows\runner\capture_exclusion.cpp user32.lib gdi32.lib /Fe:build\slot_notification_surface_test.exe /Fo:build\
+build\slot_notification_surface_test.exe
+```
+
+Тест использует тот же helper инициализации, проверяет отсутствие показа/активации,
+освобождение GDI-объектов и реальный результат affinity. При отказе возвращает 1,
+а не объявляет успех и не показывает незащищённое окно. Это не тест захвата OBS.
+**На текущем macOS этот Windows-тест не выполнялся.** Диагностика проблемного ПК
+описана в `docs/capture-troubleshooting.md`, раздел про Win32 8.
+
 Реализация добавлена, но её Windows-сборка, GUI, реестр и OBS в текущем macOS
 окружении не проверены. Тесты с подменой канала не подтверждают эти свойства.
 

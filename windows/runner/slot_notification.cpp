@@ -11,6 +11,8 @@
 #include <utility>
 
 #include "capture_exclusion.h"
+#include "capture_diagnostics.h"
+#include "slot_notification_surface.h"
 
 namespace {
 constexpr wchar_t kClassName[] = L"Helper.SlotNotification";
@@ -31,16 +33,6 @@ HMONITOR PrimaryMonitor() {
 }
 double MonitorScale(HMONITOR monitor) {
   return (std::max)(1.0, FlutterDesktopGetDpiForMonitor(monitor) / 96.0);
-}
-bool SupportsExclusion() {
-  using VersionFunction = LONG(WINAPI*)(OSVERSIONINFOW*);
-  const auto function = reinterpret_cast<VersionFunction>(
-      GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
-  OSVERSIONINFOW version{};
-  version.dwOSVersionInfoSize = sizeof(version);
-  return function && function(&version) == 0 &&
-      (version.dwMajorVersion > 10 ||
-       (version.dwMajorVersion == 10 && version.dwBuildNumber >= 19041));
 }
 LSTATUS WriteSetting(const wchar_t* name, DWORD type, const void* data, DWORD size) {
   HKEY key = nullptr;
@@ -69,6 +61,7 @@ SlotNotification::~SlotNotification() {
 void SlotNotification::Fail(const std::string& message) {
   warning_ = message;
   std::cerr << message << std::endl;
+  TraceCaptureFailure(message);
   if (on_warning_) on_warning_(message);
 }
 
@@ -108,7 +101,10 @@ bool SlotNotification::Create() {
   if (window_) return true;
   if (!graphics_token_) {
     Gdiplus::GdiplusStartupInput input;
-    if (Gdiplus::GdiplusStartup(&graphics_token_, &input, nullptr) != Gdiplus::Ok) return false;
+    if (Gdiplus::GdiplusStartup(&graphics_token_, &input, nullptr) != Gdiplus::Ok) {
+      SetLastError(ERROR_GEN_FAILURE);
+      return false;
+    }
   }
   if (!window_class_) {
     WNDCLASSW type{};
@@ -120,14 +116,46 @@ bool SlotNotification::Create() {
     if (!window_class_) return false;
   }
   window_ = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
-      kClassName, L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), this);
-  return window_ != nullptr;
+      kClassName, L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), this);
+  if (!window_) return false;
+  DWORD error = ERROR_SUCCESS;
+  if (!InitializeSlotNotificationSurface(window_, &error)) {
+    TraceCapture("slot_notification.surface_failed", window_, true, false, error);
+    DestroyWindow(window_);
+    SetLastError(error);
+    return false;
+  }
+  TraceCapture("slot_notification.surface_ready", window_, true, false);
+  return true;
 }
 
 bool SlotNotification::Protect() {
+  capture_error_ = ERROR_SUCCESS;
+  if (CaptureWindowsBuild() < 19041) {
+    capture_error_ = ERROR_NOT_SUPPORTED;
+    return false;
+  }
   DWORD affinity = WDA_NONE;
-  return SupportsExclusion() && ExcludeFromCapture(window_) &&
-      GetWindowDisplayAffinity(window_, &affinity) && affinity == WDA_EXCLUDEFROMCAPTURE;
+  if (!ExcludeFromCapture(window_, false, &capture_error_)) return false;
+  if (!GetWindowDisplayAffinity(window_, &affinity)) {
+    capture_error_ = GetLastError();
+    return false;
+  }
+  if (affinity != WDA_EXCLUDEFROMCAPTURE) {
+    capture_error_ = ERROR_NOT_SUPPORTED;
+    return false;
+  }
+  TraceCapture("slot_notification.protected", window_, !IsWindowVisible(window_), false);
+  return true;
+}
+
+void SlotNotification::ProtectionFailed() {
+  Dismiss();
+  TraceCapture("slot_notification.protection_failed", window_, true, false, capture_error_);
+  Fail("Подсказка блока не показана: Windows не подтвердила исключение из захвата "
+       "(Win32 " + std::to_string(capture_error_) + ", сборка Windows " +
+       std::to_string(CaptureWindowsBuild()) + "). Это не просто предупреждение: "
+       "показ отменён, чтобы текст не попал в запись экрана.");
 }
 
 HMONITOR SlotNotification::TargetMonitor() const {
@@ -229,15 +257,26 @@ bool SlotNotification::Render(HMONITOR monitor, const POINT* requested) {
 
 void SlotNotification::SelectionChanged(int64_t id, const std::wstring& name, bool main_visible) {
   if (!ShouldShowSlotNotification(enabled_, main_visible, id)) { Dismiss(); return; }
-  if (!Create() || !Protect()) {
+  if (!Create()) {
+    const DWORD error = GetLastError();
     Dismiss();
-    Fail("Подсказка блока скрыта: не удалось обеспечить исключение её окна из захвата.");
+    Fail("Не удалось создать прозрачную поверхность подсказки блока. Win32: " + std::to_string(error));
+    return;
+  }
+  if (!Protect()) {
+    ProtectionFailed();
     return;
   }
   text_ = SlotNotificationText(id, name);
   if (!Render(TargetMonitor())) {
     Dismiss();
     Fail("Не удалось отрисовать прозрачную подсказку блока.");
+    return;
+  }
+  // The first text upload can resize the initial blank surface. Check again
+  // before the HWND becomes visible; never fall back to an unprotected show.
+  if (!Protect()) {
+    ProtectionFailed();
     return;
   }
   lifetime_.Restart(GetTickCount64());
@@ -248,6 +287,7 @@ void SlotNotification::SelectionChanged(int64_t id, const std::wstring& name, bo
   }
   warning_.clear();
   ShowWindow(window_, SW_SHOWNOACTIVATE);
+  TraceCapture("slot_notification.show", window_, false, false);
 }
 
 void SlotNotification::Dismiss() {
@@ -360,8 +400,7 @@ LRESULT SlotNotification::HandleMessage(UINT message, WPARAM wp, LPARAM lp) {
       break;
     case WM_DWMCOMPOSITIONCHANGED:
       if (IsWindowVisible(window_) && !Protect()) {
-        Dismiss();
-        Fail("Подсказка скрыта: исключение из захвата больше недоступно.");
+        ProtectionFailed();
       }
       return 0;
     case WM_CLOSE: Dismiss(); return 0;
