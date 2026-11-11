@@ -8,20 +8,22 @@
 #include <vector>
 
 #include "slot_notification_pixels.h"
+#include "window_composition.h"
 
 struct SlotSurfaceError {
   const char* operation = "none";
   DWORD win32 = ERROR_SUCCESS;
   HRESULT hresult = S_OK;
   int graphics_status = -1;
+  std::string detail;
   bool Win32(const char* api, DWORD code) {
-    operation = api; win32 = code; hresult = S_OK; graphics_status = -1; return false;
+    operation = api; win32 = code; hresult = S_OK; graphics_status = -1; detail.clear(); return false;
   }
   bool HResult(const char* api, HRESULT code) {
-    operation = api; win32 = ERROR_SUCCESS; hresult = code; graphics_status = -1; return false;
+    operation = api; win32 = ERROR_SUCCESS; hresult = code; graphics_status = -1; detail.clear(); return false;
   }
   bool Graphics(const char* api, int code) {
-    operation = api; win32 = ERROR_SUCCESS; hresult = S_OK; graphics_status = code; return false;
+    operation = api; win32 = ERROR_SUCCESS; hresult = S_OK; graphics_status = code; detail.clear(); return false;
   }
 };
 
@@ -40,28 +42,13 @@ class SlotNotificationSurface {
   static constexpr DWORD kExStyle = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
 
   static bool Configure(HWND window, SlotSurfaceError* error) {
-    BOOL composition = FALSE;
-    HRESULT result = DwmIsCompositionEnabled(&composition);
-    if (FAILED(result)) return error->HResult("DwmIsCompositionEnabled", result);
-    if (!composition) return error->HResult("DwmIsCompositionEnabled(disabled)", DWM_E_COMPOSITIONDISABLED);
-    const MARGINS margins{};
-    result = DwmExtendFrameIntoClientArea(window, &margins);
-    if (FAILED(result)) return error->HResult("DwmExtendFrameIntoClientArea", result);
-    const BOOL no_transitions = TRUE;
-    result = DwmSetWindowAttribute(window, DWMWA_TRANSITIONS_FORCEDISABLED,
-                                   &no_transitions, sizeof(no_transitions));
-    if (FAILED(result)) return error->HResult("DwmSetWindowAttribute(transitions)", result);
-    SetLastError(ERROR_SUCCESS);
-    HRGN empty = CreateRectRgn(0, 0, 0, 0);
-    if (!empty) return error->Win32("CreateRectRgn(DWM)", GetLastError());
-    DWM_BLURBEHIND blur{};
-    blur.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
-    blur.fEnable = TRUE;
-    blur.hRgnBlur = empty; // Honor alpha; no blurred rectangle/backdrop.
-    result = DwmEnableBlurBehindWindow(window, &blur);
-    DeleteObject(empty);
-    if (FAILED(result)) return error->HResult("DwmEnableBlurBehindWindow", result);
-    return true;
+    // Exactly the main window's configuration, including NC rendering policy
+    // and ordering. Keep a single owner of this contract, not a near-copy.
+    std::string detail;
+    if (ConfigureTransparentComposition(window, &detail)) return true;
+    error->HResult("ConfigureTransparentComposition", E_FAIL);
+    error->detail = std::move(detail); // Preserve the helper's actual API/HRESULT.
+    return false;
   }
 
   bool SetFrame(HWND window, const std::vector<uint32_t>& pixels,

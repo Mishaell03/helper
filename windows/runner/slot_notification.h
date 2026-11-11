@@ -7,6 +7,7 @@
 
 #include "slot_notification_policy.h"
 #include "slot_notification_surface.h"
+#include "capture_window_parking.h"
 
 // One UI-thread-owned HWND. Selection remains exclusively in Flutter.
 class SlotNotification {
@@ -35,6 +36,8 @@ class SlotNotification {
   void ProtectionFailed();
   void NativeFailed(const SlotSurfaceError& error);
   bool Repaint();
+  bool Present();
+  void Conceal();
   bool Render(HMONITOR monitor, const POINT* position = nullptr);
   HMONITOR TargetMonitor() const;
   void RefreshPosition();
@@ -47,9 +50,11 @@ class SlotNotification {
   ULONG_PTR graphics_token_ = 0;
   SlotSurfaceError native_error_;
   SlotNotificationSurface surface_;
+  CaptureWindowParking parking_;
+  bool hidden_ = true; // IsWindowVisible remains true for a parked Win10 HWND.
+  bool composition_ready_ = false;
   bool paint_ok_ = true;
   bool rendering_ = false;
-  bool refresh_pending_ = false;
   bool render_message_failed_ = false;
   bool affinity_applied_ = false;
   bool affinity_readback_noted_ = false;

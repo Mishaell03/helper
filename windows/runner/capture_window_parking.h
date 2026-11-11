@@ -10,6 +10,9 @@ class CaptureWindowParking {
   bool Park(HWND window);
   bool Restore(HWND window);
   bool parked() const { return parked_; }
+  // A notification can replace/resize its frame while parked. Its next reveal
+  // must use the new logical bounds, never persist the off-screen coordinates.
+  void SetRestoreBounds(const RECT& bounds) { if (parked_) restore_ = bounds; }
   void ConstrainPosition(WINDOWPOS* position) const;
   void Repark(HWND window) const;
 
