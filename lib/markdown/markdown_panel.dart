@@ -1086,7 +1086,11 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                 ? _startSelected
                 : null,
           ),
-        _icon(Icons.add, 'Импортировать .md или .txt', _busy ? null : _import),
+        _icon(
+          Icons.add,
+          'Импортировать .md, .txt или .sql',
+          _busy ? null : _import,
+        ),
         _icon(
           Icons.settings_outlined,
           'Настройки',
@@ -1153,7 +1157,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                           ? 'Архив пуст.'
                           : _view == _View.pinned
                           ? 'Нет закреплённых блоков.'
-                          : 'Добавьте файл .md или .txt\nс помощью кнопки +.',
+                          : 'Добавьте файл .md, .txt или .sql\nс помощью кнопки +.',
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: Colors.white60),
                     ),

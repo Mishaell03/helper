@@ -75,8 +75,10 @@ void _appendBlock(String source, List<ParsedBlock> blocks) {
 /// the Flutter UI isolate. Original bytes (including BOM) are retained too.
 Future<ImportedDocument> readMarkdownFile(String filename) async {
   final extension = path.extension(filename).toLowerCase();
-  if (extension != '.md' && extension != '.txt') {
-    throw const FormatException('Можно импортировать только файлы .md и .txt.');
+  if (!['.md', '.txt', '.sql'].contains(extension)) {
+    throw const FormatException(
+      'Можно импортировать только файлы .md, .txt и .sql.',
+    );
   }
   final file = File(filename);
   const maximumBytes = 32 * 1024 * 1024;
@@ -93,9 +95,20 @@ Future<ImportedDocument> readMarkdownFile(String filename) async {
   }
   final text = decodeMarkdown(bytes);
   // Keep BOM in original text, but do not treat it as part of a heading.
-  final parsed = parseMarkdown(
-    text.startsWith('\uFEFF') ? text.substring(1) : text,
-  );
+  final body = text.startsWith('\uFEFF') ? text.substring(1) : text;
+  // SQL is one executable script: never interpret headings or --- comments as
+  // Markdown metadata/separators, which could split or remove SQL statements.
+  final parsed = extension == '.sql'
+      ? [
+          if (body.trim().isNotEmpty)
+            ParsedBlock(
+              title: path.basename(filename),
+              description: '',
+              content: body,
+              source: body,
+            ),
+        ]
+      : parseMarkdown(body);
   if (parsed.isEmpty) {
     throw const FormatException('В файле нет текстовых блоков.');
   }

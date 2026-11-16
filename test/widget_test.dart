@@ -158,7 +158,7 @@ void main() {
   }
 
   Future<void> importFiles(WidgetTester tester) async {
-    await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+    await tester.tap(find.byTooltip('Импортировать .md, .txt или .sql'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Продолжить импорт'));
     await settle(tester);
@@ -369,7 +369,7 @@ void main() {
       await navigateSlot(tester, 1);
       expect(selectedSlot(tester), ids[1]);
       expect(FocusManager.instance.primaryFocus, same(focus));
-      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.tap(find.byTooltip('Импортировать .md, .txt или .sql'));
       await tester.pumpAndSettle();
       await navigateSlot(tester, 1); // Do not change selection behind a modal.
       await tester.tap(find.text('Отмена'));
@@ -1039,7 +1039,7 @@ void main() {
         ),
       );
       await settle(tester);
-      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.tap(find.byTooltip('Импортировать .md, .txt или .sql'));
       await tester.pumpAndSettle();
       expect(find.text('Импорт во время демонстрации'), findsOneWidget);
       expect(find.textContaining('имена файлов и пути'), findsOneWidget);
@@ -1048,7 +1048,7 @@ void main() {
       await settle(tester);
       expect(pickerCalls, 0);
       expect(controller.files, isEmpty);
-      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.tap(find.byTooltip('Импортировать .md, .txt или .sql'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Продолжить импорт'));
       await settle(tester);
@@ -1093,7 +1093,7 @@ void main() {
       Tooltip.dismissAllToolTips();
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Импортировать .md или .txt'));
+      await tester.tap(find.byTooltip('Импортировать .md, .txt или .sql'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Продолжить импорт'));
       await settle(tester);

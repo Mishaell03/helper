@@ -25,6 +25,28 @@ void main() {
   });
 
   test(
+    'Imported SQL remains available after the temporary original is deleted',
+    () async {
+      final file = File('${directory.path}/migration.sql');
+      const sql = 'CREATE TABLE T (Id INT);\n---\nINSERT INTO T VALUES (1);';
+      await file.writeAsString(sql);
+      final controller = MarkdownController(repository);
+      addTearDown(controller.dispose);
+      final result = await controller.importPaths([file.path]);
+      expect(result.errors, isEmpty);
+      expect(result.blocks, 1);
+      await file.delete();
+      await repository.close();
+      repository = await MarkdownRepository.open(databasePath: databasePath);
+      expect((await repository.files()).single.filename, 'migration.sql');
+      final block = await repository.block(
+        (await repository.blocks()).single.id,
+      );
+      expect(block.content, sql);
+    },
+  );
+
+  test(
     'Сброс удаляет импорты, архив, отметки и настройки, включая после перезапуска',
     () async {
       await repository.importDocument(

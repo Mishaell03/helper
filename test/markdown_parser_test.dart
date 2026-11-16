@@ -6,6 +6,30 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:helper/markdown/markdown_parser.dart';
 
 void main() {
+  test(
+    'SQL imports as one exact script with BOM and Markdown-like comments',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'helper_sql_parser_',
+      );
+      try {
+        const sql =
+            '#temp\r\nCREATE TABLE T (Id INT);\r\n---\r\nGO\r\nINSERT INTO T VALUES (1);\r\n';
+        final bytes = [0xef, 0xbb, 0xbf, ...utf8.encode(sql)];
+        final file = File('${directory.path}/Миграция.SQL');
+        await file.writeAsBytes(bytes);
+        final document = await readMarkdownFile(file.path);
+        expect(document.blocks, hasLength(1));
+        expect(document.blocks.single.title, 'Миграция.SQL');
+        expect(document.blocks.single.content, sql);
+        expect(document.blocks.single.source, sql);
+        expect(document.bytes, bytes);
+        expect(document.text, '\uFEFF$sql');
+      } finally {
+        await directory.delete(recursive: true);
+      }
+    },
+  );
   test('Разделители, метаданные и точные переводы строк CRLF', () {
     const text =
         '---\r\n# Заказ\r\n### Описание\r\n\r\nШаг 1.  \r\n\r\nШаг 2.\r\n\r\n---\r\n# Второй\r\n\r\nТекст\r\n';

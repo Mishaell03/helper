@@ -1032,8 +1032,9 @@ void BackgroundManager::PickMarkdownFiles(
   HRESULT status = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(import_dialog_.GetAddressOf()));
   const COMDLG_FILTERSPEC filters[] = {
-      {L"Текстовые файлы (*.md; *.txt)", L"*.md;*.txt"},
-      {L"Markdown (*.md)", L"*.md"}, {L"Текст (*.txt)", L"*.txt"}};
+      {L"Текст и SQL (*.md; *.txt; *.sql)", L"*.md;*.txt;*.sql"},
+      {L"Markdown (*.md)", L"*.md"}, {L"Текст (*.txt)", L"*.txt"},
+      {L"SQL (*.sql)", L"*.sql"}};
   if (SUCCEEDED(status)) status = import_dialog_->SetOptions(
       FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST |
       FOS_ALLOWMULTISELECT | FOS_NOCHANGEDIR);
