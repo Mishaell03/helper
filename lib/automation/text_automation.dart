@@ -104,6 +104,8 @@ class Win32AutomationBackend extends AutomationBackend {
 }
 
 class TextAutomationController extends ChangeNotifier {
+  // Negative ID is reserved by the native backend for an in-memory draft.
+  static const draftBlockId = -1;
   TextAutomationController(this.repository, {AutomationBackend? backend})
     : _backend = backend ?? Win32AutomationBackend() {
     _backend.onState = _apply;
@@ -199,7 +201,27 @@ class TextAutomationController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> start(int blockId, {bool fromHotkey = false}) async {
+  Future<void> start(int blockId, {bool fromHotkey = false}) => _start(
+    blockId,
+    () async => (await repository.block(blockId)).content,
+    fromHotkey: fromHotkey,
+  );
+
+  Future<void> startText(String text, {bool fromHotkey = false}) async {
+    if (!canStart) return;
+    if (text.trim().isEmpty || text.contains('\u0000')) {
+      failure = 'Вставьте непустой текст без нулевых символов.';
+      _notify();
+      return;
+    }
+    await _start(draftBlockId, () async => text, fromHotkey: fromHotkey);
+  }
+
+  Future<void> _start(
+    int blockId,
+    Future<String> Function() readText, {
+    required bool fromHotkey,
+  }) async {
     if (!canStart) return;
     final generation = ++_generation;
     commandPending = true;
@@ -210,12 +232,12 @@ class TextAutomationController extends ChangeNotifier {
       await _speedTail;
       if (_disposed || generation != _generation) return;
       // Always read the complete immutable source, never a truncated preview.
-      final block = await repository.block(blockId);
+      final text = await readText();
       if (_disposed || generation != _generation) return;
       _apply(
         await _backend.invoke('start', {
           'blockId': blockId,
-          'text': block.content,
+          'text': text,
           'speed': speed,
           'stopToken': state.stopToken,
           'countdownSeconds': fromHotkey ? 1 : 5,

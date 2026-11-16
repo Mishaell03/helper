@@ -37,6 +37,40 @@ void main() {
   }
 
   test(
+    'In-memory text uses a snapshot and never creates or archives a block',
+    () async {
+      await controller.initialize();
+      const text = 'if (x) {\n\tprint("Привет 😀");\n}\n';
+      await controller.startText(text);
+      expect(backend.receivedText, text);
+      expect(controller.state.blockId, TextAutomationController.draftBlockId);
+      expect(
+        controller.protects(TextAutomationController.draftBlockId),
+        isTrue,
+      );
+      expect(controller.state.countdown, 5);
+      backend.emit(
+        AutomationPhase.completed,
+        position: backend.data['total'] as int,
+      );
+      await controller.flushArchive();
+      expect(controller.archiving, isFalse);
+      expect(await repository.blocks(), isEmpty);
+      expect(await repository.files(), isEmpty);
+      await controller.startText('edited', fromHotkey: true);
+      expect(backend.receivedText, 'edited');
+      expect(controller.state.countdown, 1);
+    },
+  );
+
+  test('Blank drafts are rejected without invoking native start', () async {
+    await controller.initialize();
+    await controller.startText(' \n\t');
+    expect(controller.failure, isNotNull);
+    expect(backend.calls.where((call) => call.$1 == 'start'), isEmpty);
+  });
+
+  test(
     'Только подтверждённое завершение архивирует ID операции, без повторов',
     () async {
       final id = await source('Полный текст 😀');

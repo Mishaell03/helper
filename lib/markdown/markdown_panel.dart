@@ -12,6 +12,7 @@ import '../transient_message.dart';
 import '../window_resize_border.dart';
 import '../automation/text_automation.dart';
 import '../automation/automation_controls.dart';
+import '../automation/draft_editor.dart';
 import '../updates/update_settings.dart';
 import '../migration/migration_controller.dart';
 import '../migration/migration_panel.dart';
@@ -22,7 +23,7 @@ import 'markdown_repository.dart';
 import 'models.dart';
 import 'block_display.dart';
 
-enum _View { blocks, pinned, archive, migration, settings }
+enum _View { blocks, pinned, archive, editor, migration, settings }
 
 enum _SettingsTab { files, hotkeys, preferences }
 
@@ -46,6 +47,7 @@ class MarkdownPanel extends StatefulWidget {
 class _MarkdownPanelState extends State<MarkdownPanel> {
   final _focus = FocusNode(debugLabel: 'Блоки');
   final _scroll = ScrollController();
+  final _draft = TextEditingController();
   MarkdownController? _controller;
   TextAutomationController? _automation;
   _View _view = _View.blocks;
@@ -225,6 +227,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   Future<void> _startSelected({bool fromHotkey = false}) async {
+    if (_view == _View.editor) {
+      await _startDraft(fromHotkey: fromHotkey);
+      return;
+    }
     final id = _opened?.id ?? _selected;
     if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
     if (_busy || id == null) {
@@ -234,6 +240,21 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       return;
     }
     await _startBlock(id, fromHotkey: fromHotkey);
+  }
+
+  Future<void> _startDraft({bool fromHotkey = false}) async {
+    if (!mounted ||
+        _busy ||
+        _automation?.canStart != true ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    final snapshot = _draft.text;
+    _focus.requestFocus();
+    await _run(() async {
+      if (isWindows) await BackgroundService.instance.setTextInputActive(false);
+      await _automation!.startText(snapshot, fromHotkey: fromHotkey);
+    });
   }
 
   Future<void> _exitApplication() => _run(() async {
@@ -578,6 +599,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     }
     if (_opened != null ||
         _view == _View.settings ||
+        _view == _View.editor ||
         _view == _View.migration ||
         _busy) {
       return KeyEventResult.ignored;
@@ -623,6 +645,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   void _navigateSlot(int delta) {
     if (!mounted ||
         _busy ||
+        _view == _View.editor ||
         _view == _View.migration ||
         ModalRoute.of(context)?.isCurrent != true) {
       return;
@@ -733,6 +756,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         }
         await _migration?.setEnabled(false);
         await _migration?.cleanup();
+        _draft.clear();
         await _controller!.resetApplicationData();
         await _automation?.initialize();
         if (_automation?.failure != null) {
@@ -824,6 +848,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     }
     _focus.dispose();
     _scroll.dispose();
+    _draft.dispose();
     super.dispose();
   }
 
@@ -866,6 +891,13 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                             ? _errorView()
                             : _opened != null
                             ? _fullContent()
+                            : _view == _View.editor
+                            ? DraftEditor(
+                                text: _draft,
+                                automation: _automation,
+                                enabled: !_busy,
+                                onStart: () => _startDraft(),
+                              )
                             : _view == _View.settings
                             ? _settings()
                             : _blockList(),
@@ -881,13 +913,17 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                   AutomationStatusBar(
                     controller: _automation!,
                     title:
-                        _controller!.blocks
-                            .where(
-                              (block) => block.id == _automation!.state.blockId,
-                            )
-                            .firstOrNull
-                            ?.displayTitle ??
-                        'Автоматический ввод',
+                        _automation!.state.blockId ==
+                            TextAutomationController.draftBlockId
+                        ? 'Текст и код'
+                        : _controller!.blocks
+                                  .where(
+                                    (block) =>
+                                        block.id == _automation!.state.blockId,
+                                  )
+                                  .firstOrNull
+                                  ?.displayTitle ??
+                              'Автоматический ввод',
                     onMessage: (message) => showDialog<void>(
                       context: context,
                       builder: (context) => AlertDialog(
@@ -969,26 +1005,30 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     String tooltip,
     VoidCallback? onPressed, {
     bool selected = false,
-  }) => IconButton(
-    tooltip: tooltip,
-    onPressed: onPressed,
-    iconSize: 18,
-    constraints: const BoxConstraints.tightFor(width: 38, height: 34),
-    padding: EdgeInsets.zero,
-    icon: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: selected ? Colors.white : Colors.white70),
-        const SizedBox(height: 4),
-        Container(
-          height: 2,
-          width: 14,
-          decoration: BoxDecoration(
-            color: selected ? const Color(0xFF8792A4) : Colors.transparent,
-            borderRadius: BorderRadius.circular(1),
+  }) => SizedBox(
+    width: 34,
+    height: 34,
+    child: IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      iconSize: 18,
+      constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+      padding: EdgeInsets.zero,
+      icon: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: selected ? Colors.white : Colors.white70),
+          const SizedBox(height: 4),
+          Container(
+            height: 2,
+            width: 14,
+            decoration: BoxDecoration(
+              color: selected ? const Color(0xFF8792A4) : Colors.transparent,
+              borderRadius: BorderRadius.circular(1),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 
@@ -1027,12 +1067,22 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
             () => _navigate(_View.migration),
             selected: _view == _View.migration,
           ),
+        _icon(
+          Icons.edit_note,
+          'Текст и код',
+          () => _navigate(_View.editor),
+          selected: _view == _View.editor,
+        ),
         const Spacer(),
         if (_automation != null)
           _icon(
             Icons.play_arrow,
-            'Начать ввод выбранного блока (через 5 с)',
-            !_busy && _selected != null && _automation!.canStart
+            _view == _View.editor
+                ? 'Начать ввод текста (через 5 с)'
+                : 'Начать ввод выбранного блока (через 5 с)',
+            !_busy &&
+                    (_view == _View.editor || _selected != null) &&
+                    _automation!.canStart
                 ? _startSelected
                 : null,
           ),

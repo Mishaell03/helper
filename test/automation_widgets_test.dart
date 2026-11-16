@@ -72,6 +72,57 @@ void main() {
     addTearDown(() => tester.pumpWidget(const SizedBox()));
   }
 
+  testWidgets(
+    'Public editor retains edits, starts a snapshot and supports the hotkey',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 440);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await open(tester);
+      expect(find.byTooltip('Excel → SQL'), findsNothing);
+      await tester.tap(find.byTooltip('Текст и код'));
+      await tester.pumpAndSettle();
+      const draft = 'SELECT *\nFROM [Таблица]; -- 😀';
+      await tester.enterText(find.byKey(const Key('draftText')), draft);
+      await tester.tap(find.byTooltip('Все блоки'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Текст и код'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('draftText')))
+            .controller!
+            .text,
+        draft,
+      );
+      await tester.tap(find.byTooltip('Начать ввод текста (через 5 с)'));
+      await settle(tester);
+      expect(backend.receivedText, draft);
+      expect(automation.state.blockId, TextAutomationController.draftBlockId);
+      expect(automation.state.countdown, 5);
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('draftText'))).enabled,
+        isFalse,
+      );
+      backend.emit(
+        AutomationPhase.completed,
+        position: backend.data['total'] as int,
+      );
+      await settle(tester);
+      final original = await tester.runAsync(() => repository.block(id));
+      expect(original!.archived, isFalse);
+      expect(markdown.blocks, hasLength(1));
+      await tester.enterText(find.byKey(const Key('draftText')), 'edited');
+      backend.onStartRequested!();
+      await settle(tester);
+      expect(backend.receivedText, 'edited');
+      expect(automation.state.countdown, 1);
+      expect(tester.takeException(), isNull);
+      await automation.stop();
+    },
+  );
+
   testWidgets('Завершение архивирует введённый блок, а не текущий выбор', (
     tester,
   ) async {

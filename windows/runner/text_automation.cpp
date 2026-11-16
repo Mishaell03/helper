@@ -166,7 +166,9 @@ bool TextAutomation::Start(const Map& args, std::string* error) {
   const auto* text = found == args.end() ? nullptr : std::get_if<std::string>(&found->second);
   const int64_t speed = Integer(args, "speed", 1000);
   const int64_t block = Integer(args, "blockId", 0);
-  if (!text || text->empty() || text->find('\0') != std::string::npos || block <= 0 ||
+  // -1 identifies a transient editor snapshot; it has no database block.
+  if (!text || text->empty() || text->find('\0') != std::string::npos ||
+      (block <= 0 && block != -1) ||
       text->size() > static_cast<size_t>((std::numeric_limits<int>::max)()) ||
       speed < 300 || speed > 2000) {
     *error = "Нужен непустой Unicode-текст без нулевых символов и скорость 300–2000 символов/мин.";
