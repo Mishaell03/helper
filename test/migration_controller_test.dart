@@ -215,6 +215,32 @@ void main() {
     expect(unquotePath('  "C:\\Excel Files"  '), 'C:\\Excel Files');
   });
 
+  test('SQL file is copied to temp without altering its bytes', () async {
+    final source = File(p.join(root.path, 'Схема таблиц.SQL'));
+    final bytes = [255, 254, 67, 0, 82, 0, 69, 0, 65, 0, 84, 0, 69, 0];
+    await source.writeAsBytes(bytes);
+    await controller.generate(
+      excelDirectory: input.path,
+      sqlFile: '"${source.path}"',
+      useGpu: false,
+    );
+    expect(controller.excel, isNotNull);
+    final staged = File(calls.first[calls.first.indexOf('--sql-input') + 1]);
+    expect(p.isWithin(controller.workspace!.path, staged.path), isTrue);
+    expect(await staged.readAsBytes(), bytes);
+    expect(await source.readAsBytes(), bytes);
+  });
+
+  test('missing SQL file never launches the engine', () async {
+    await controller.generate(
+      excelDirectory: input.path,
+      sqlFile: p.join(root.path, 'missing.sql'),
+      useGpu: false,
+    );
+    expect(calls, isEmpty);
+    expect(controller.status, contains('существующий локальный файл'));
+  });
+
   test(
     'cancellation kills the process without exposing partial outputs',
     () async {

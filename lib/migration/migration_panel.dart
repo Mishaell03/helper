@@ -15,16 +15,24 @@ class MigrationPanel extends StatefulWidget {
 class _MigrationPanelState extends State<MigrationPanel> {
   final _excel = TextEditingController();
   final _ddl = TextEditingController();
+  final _sqlFile = TextEditingController();
   final _destination = TextEditingController();
   final _decisions = TextEditingController();
   bool _gpu = true;
   bool _saveExcel = false;
   bool _saveSql = false;
   bool _starting = false;
+  bool _sqlFromFile = false;
 
   @override
   void dispose() {
-    for (final controller in [_excel, _ddl, _destination, _decisions]) {
+    for (final controller in [
+      _excel,
+      _ddl,
+      _sqlFile,
+      _destination,
+      _decisions,
+    ]) {
       controller.dispose();
     }
     super.dispose();
@@ -36,6 +44,7 @@ class _MigrationPanelState extends State<MigrationPanel> {
       await widget.controller.generate(
         excelDirectory: _excel.text,
         ddl: _ddl.text,
+        sqlFile: _sqlFromFile ? _sqlFile.text : null,
         useGpu: _gpu,
         decisions: _decisions.text,
       );
@@ -112,17 +121,41 @@ class _MigrationPanelState extends State<MigrationPanel> {
             ),
           ),
           const SizedBox(height: 8),
-          TextInputActivation(
-            child: TextField(
-              controller: _ddl,
-              enabled: !busy,
-              minLines: 5,
-              maxLines: 12,
-              decoration: const InputDecoration(
-                labelText: 'SQL Server: CREATE TABLE …',
+          DropdownButtonFormField<bool>(
+            initialValue: _sqlFromFile,
+            decoration: const InputDecoration(labelText: 'Источник SQL'),
+            items: const [
+              DropdownMenuItem(value: false, child: Text('Ввести SQL')),
+              DropdownMenuItem(value: true, child: Text('Путь к SQL-файлу')),
+            ],
+            onChanged: busy
+                ? null
+                : (value) => setState(() => _sqlFromFile = value ?? false),
+          ),
+          const SizedBox(height: 8),
+          if (_sqlFromFile)
+            TextInputActivation(
+              child: TextField(
+                controller: _sqlFile,
+                enabled: !busy,
+                decoration: const InputDecoration(
+                  labelText: 'Путь к файлу .sql',
+                  helperText: 'Локальный файл, не интернет-ссылка.',
+                ),
+              ),
+            )
+          else
+            TextInputActivation(
+              child: TextField(
+                controller: _ddl,
+                enabled: !busy,
+                minLines: 5,
+                maxLines: 12,
+                decoration: const InputDecoration(
+                  labelText: 'SQL Server: CREATE TABLE …',
+                ),
               ),
             ),
-          ),
           const SizedBox(height: 8),
           TextInputActivation(
             child: TextField(

@@ -1,0 +1,49 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:helper/migration/migration_controller.dart';
+import 'package:helper/migration/migration_panel.dart';
+
+void main() {
+  testWidgets(
+    'SQL source switches without removing Excel input or losing SQL',
+    (tester) async {
+      final controller = MigrationController(
+        engineDirectory: Directory('unused'),
+        settingsFile: File('unused.json'),
+      );
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: MigrationPanel(controller: controller)),
+        ),
+      );
+      Finder field(String label) => find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField && widget.decoration?.labelText == label,
+      );
+      final excel = field('Путь к папке с .xlsx');
+      final ddl = field('SQL Server: CREATE TABLE …');
+      await tester.enterText(excel, 'C:\\Excel');
+      await tester.enterText(ddl, 'CREATE TABLE A (Id INT);');
+      await tester.tap(find.byType(DropdownButtonFormField<bool>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Путь к SQL-файлу').last);
+      await tester.pumpAndSettle();
+      expect(excel, findsOneWidget);
+      expect(field('Путь к файлу .sql'), findsOneWidget);
+      expect(ddl, findsNothing);
+      expect(tester.widget<TextField>(excel).controller!.text, 'C:\\Excel');
+      await tester.tap(find.byType(DropdownButtonFormField<bool>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ввести SQL').last);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(ddl).controller!.text,
+        'CREATE TABLE A (Id INT);',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+}

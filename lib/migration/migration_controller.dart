@@ -104,7 +104,8 @@ class MigrationController extends ChangeNotifier {
 
   Future<void> generate({
     required String excelDirectory,
-    required String ddl,
+    String ddl = '',
+    String? sqlFile,
     required bool useGpu,
     String decisions = '',
   }) async {
@@ -124,7 +125,15 @@ class MigrationController extends ChangeNotifier {
       if (!await input.exists()) {
         throw const FormatException('Папка Excel не найдена.');
       }
-      if (ddl.trim().isEmpty) {
+      final source = sqlFile == null ? null : File(unquotePath(sqlFile));
+      if (source != null &&
+          (p.extension(source.path).toLowerCase() != '.sql' ||
+              !await source.exists())) {
+        throw const FormatException(
+          'Укажите существующий локальный файл .sql.',
+        );
+      }
+      if (source == null && ddl.trim().isEmpty) {
         throw const FormatException('Вставьте SQL создания таблиц.');
       }
       final config = unquotePath(decisions);
@@ -134,7 +143,12 @@ class MigrationController extends ChangeNotifier {
       await cleanup();
       workspace = await Directory.systemTemp.createTemp('helper-migration-');
       final schema = File(p.join(workspace!.path, 'schema.sql'));
-      await schema.writeAsString(ddl, encoding: utf8, flush: true);
+      if (source != null) {
+        // Preserve BOM/UTF-16 supported by the engine, never rewrite the source.
+        await source.copy(schema.path);
+      } else {
+        await schema.writeAsString(ddl, encoding: utf8, flush: true);
+      }
       final generated = <String, File>{};
       for (final format in ['excel-normalized', 'sql-simple']) {
         if (_cancelled) throw const FormatException('Генерация отменена.');
@@ -146,7 +160,7 @@ class MigrationController extends ChangeNotifier {
           schema.path,
           output,
           useGpu,
-          config,
+          config.isEmpty ? '' : File(config).absolute.path,
         );
       }
       // Publish only after BOTH processes have confirmed completion.
