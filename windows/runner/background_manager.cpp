@@ -257,6 +257,16 @@ BackgroundManager::BackgroundManager(HWND window,
         update_process_ = nullptr;
       }
       result->Success();
+    } else if (method == "getDesktopDirectory") {
+      PWSTR directory = nullptr;
+      const HRESULT status = SHGetKnownFolderPath(FOLDERID_Desktop, 0,
+                                                  nullptr, &directory);
+      if (FAILED(status)) {
+        result->Error("storage_error", "Не удалось определить рабочий стол.");
+      } else {
+        result->Success(Value(Utf8FromUtf16(directory)));
+      }
+      if (directory) CoTaskMemFree(directory);
     } else if (method == "getStorageDirectory") {
       PWSTR directory = nullptr;
       const HRESULT status = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0,

@@ -13,6 +13,8 @@ import '../window_resize_border.dart';
 import '../automation/text_automation.dart';
 import '../automation/automation_controls.dart';
 import '../updates/update_settings.dart';
+import '../migration/migration_controller.dart';
+import '../migration/migration_panel.dart';
 import 'block_card.dart';
 import 'block_tap_region.dart';
 import 'markdown_controller.dart';
@@ -20,7 +22,7 @@ import 'markdown_repository.dart';
 import 'models.dart';
 import 'block_display.dart';
 
-enum _View { blocks, pinned, archive, settings }
+enum _View { blocks, pinned, archive, migration, settings }
 
 enum _SettingsTab { files, hotkeys, preferences }
 
@@ -63,6 +65,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   int _preferencesRevision = 0;
   String? _loadError;
   Timer? _notificationTimer;
+  MigrationController? _migration;
   bool _pointerInside = false;
   bool? _viewerEscapeEnabled;
   (bool, bool)? _autoHideContext;
@@ -78,6 +81,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       _opening ||
       _installingUpdate ||
       _resettingData ||
+      (_migration?.busy ?? false) ||
       (_controller?.busy ?? false);
 
   @override
@@ -89,9 +93,34 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       BackgroundService.instance.onCloseViewer = _closeViewer;
     }
     _initialize();
+    if (isWindows) unawaited(_initializeMigration());
     if (isWindows) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkHotkeys());
     }
+  }
+
+  Future<void> _initializeMigration() async {
+    try {
+      final controller = await MigrationController.open();
+      if (!mounted) {
+        controller.dispose();
+        return;
+      }
+      _migration = controller;
+      controller.addListener(_migrationChanged);
+      setState(() {});
+    } catch (_) {
+      // Missing/unavailable optional module must not affect the main app.
+    }
+  }
+
+  void _migrationChanged() {
+    if (!mounted) return;
+    setState(() {
+      if (_migration?.enabled != true && _view == _View.migration) {
+        _view = _View.blocks;
+      }
+    });
   }
 
   @override
@@ -211,6 +240,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     await _automation?.stop();
     await _automation?.flushArchive();
     await _automation?.flushPreferences();
+    await _migration?.cleanup();
     await BackgroundService.instance.exit();
   });
 
@@ -252,6 +282,7 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       }
       await _automation?.flushPreferences();
       await _automation?.flushArchive();
+      await _migration?.cleanup();
       await launch();
       await BackgroundService.instance.exit();
     } finally {
@@ -545,7 +576,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
       if (event is KeyDownEvent) _back();
       return KeyEventResult.handled;
     }
-    if (_opened != null || _view == _View.settings || _busy) {
+    if (_opened != null ||
+        _view == _View.settings ||
+        _view == _View.migration ||
+        _busy) {
       return KeyEventResult.ignored;
     }
     final blocks = _blocks;
@@ -587,7 +621,12 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
   }
 
   void _navigateSlot(int delta) {
-    if (!mounted || _busy || ModalRoute.of(context)?.isCurrent != true) return;
+    if (!mounted ||
+        _busy ||
+        _view == _View.migration ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
     final next = _selectRelative(delta);
     if (next == null) return;
     if (_opened != null) {
@@ -692,6 +731,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
         if (isWindows) {
           await BackgroundService.instance.resetApplicationSettings();
         }
+        await _migration?.setEnabled(false);
+        await _migration?.cleanup();
         await _controller!.resetApplicationData();
         await _automation?.initialize();
         if (_automation?.failure != null) {
@@ -741,6 +782,8 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
 
   @override
   void dispose() {
+    _migration?.removeListener(_migrationChanged);
+    _migration?.dispose();
     if (isWindows) {
       unawaited(
         BackgroundService.instance
@@ -809,17 +852,30 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                     (_controller?.busy ?? false))
                   const LinearProgressIndicator(minHeight: 1),
                 Expanded(
-                  child: _loading
-                      ? const Center(
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : _loadError != null
-                      ? _errorView()
-                      : _opened != null
-                      ? _fullContent()
-                      : _view == _View.settings
-                      ? _settings()
-                      : _blockList(),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (_view != _View.migration)
+                        _loading
+                            ? const Center(
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : _loadError != null
+                            ? _errorView()
+                            : _opened != null
+                            ? _fullContent()
+                            : _view == _View.settings
+                            ? _settings()
+                            : _blockList(),
+                      if (_migration?.enabled == true)
+                        Offstage(
+                          offstage: _view != _View.migration,
+                          child: MigrationPanel(controller: _migration!),
+                        ),
+                    ],
+                  ),
                 ),
                 if (_automation != null)
                   AutomationStatusBar(
@@ -964,6 +1020,13 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
           () => _navigate(_View.archive),
           selected: _view == _View.archive,
         ),
+        if (_migration?.enabled == true)
+          _icon(
+            Icons.table_chart_outlined,
+            'Excel → SQL',
+            () => _navigate(_View.migration),
+            selected: _view == _View.migration,
+          ),
         const Spacer(),
         if (_automation != null)
           _icon(
@@ -1380,6 +1443,18 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     key: const Key('preferencesList'),
     padding: const EdgeInsets.symmetric(horizontal: 12),
     children: [
+      if (_migration?.available == true)
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Внешний модуль Excel → SQL'),
+          subtitle: const Text(
+            'Python и LLM запускаются только по кнопке генерации.',
+          ),
+          value: _migration!.enabled,
+          onChanged: _busy
+              ? null
+              : (value) => _run(() => _migration!.setEnabled(value)),
+        ),
       if (_automation != null)
         AbsorbPointer(
           absorbing: _busy,

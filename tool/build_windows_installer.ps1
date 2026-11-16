@@ -125,6 +125,11 @@ try {
   }
   Invoke-Checked $flutter.Source @('build', 'windows', '--release', "--build-name=$Version", "--build-number=$BuildNumber", '--no-pub')
   $release = Join-Path $root 'build\windows\x64\runner\Release'
+  # Optional Python/LLM runtime is deployed manually, never by the public build.
+  # Do not delete a user's manually deployed engine from the build directory.
+  if (Test-Path -LiteralPath (Join-Path $release 'modules\ExcelMigrationEngine')) {
+    throw 'Optional modules\ExcelMigrationEngine found in Release. Move it outside Release before packaging; Python/LLM must not enter the public installer or ZIP.'
+  }
   foreach ($required in @('helper.exe', 'flutter_windows.dll', 'data\icudtl.dat', 'data\flutter_assets')) {
     if (-not (Test-Path -LiteralPath (Join-Path $release $required))) { throw "Build output missing: $required" }
   }

@@ -1,0 +1,233 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:helper/migration/migration_controller.dart';
+import 'package:path/path.dart' as p;
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory root;
+  late MigrationController controller;
+  late Directory input;
+  final calls = <List<String>>[];
+  var mode = 'success';
+  Completer<void>? processStarted;
+
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('helper-module-test-');
+    input = await Directory(p.join(root.path, 'Excel с пробелами')).create();
+    final engine = Directory(p.join(root.path, 'engine'));
+    await Directory(p.join(engine.path, '_internal')).create(recursive: true);
+    await File(p.join(engine.path, 'generator.exe')).writeAsString('fake');
+    final model = File(p.join(engine.path, 'models', 'qwen.gguf'));
+    await model.parent.create();
+    await model.writeAsString('fake');
+    mode = 'success';
+    processStarted = null;
+    calls.clear();
+    // flutter_tester lives in <sdk>/bin/cache/artifacts/engine/<platform>.
+    final dart = p.normalize(
+      p.join(
+        p.dirname(Platform.resolvedExecutable),
+        '..',
+        '..',
+        '..',
+        'dart-sdk',
+        'bin',
+        Platform.isWindows ? 'dart.exe' : 'dart',
+      ),
+    );
+    controller = MigrationController(
+      engineDirectory: engine,
+      settingsFile: File(p.join(root.path, 'settings.json')),
+      startProcess: (executable, arguments, workingDirectory) async {
+        calls.add(arguments);
+        final process = await Process.start(dart, [
+          p.absolute('test/fixtures/migration_engine.dart'),
+          mode,
+          ...arguments,
+        ], workingDirectory: workingDirectory);
+        processStarted?.complete();
+        return process;
+      },
+    );
+    await controller.refresh();
+    await controller.setEnabled(true);
+  });
+
+  tearDown(() async {
+    await controller.cleanup();
+    controller.dispose();
+    await root.delete(recursive: true);
+  });
+
+  Future<void> generate() => controller.generate(
+    excelDirectory: '"${input.path}"',
+    ddl: 'CREATE TABLE Item (Id INT PRIMARY KEY);',
+    useGpu: true,
+  );
+
+  test('module is gated by files and persistent opt-in', () async {
+    expect(controller.available, isTrue);
+    await controller.setEnabled(false);
+    await controller.refresh();
+    expect(controller.enabled, isFalse);
+    await generate();
+    expect(calls, isEmpty);
+    await controller.setEnabled(true);
+    await controller.refresh();
+    expect(controller.enabled, isTrue);
+    await File(
+      p.join(controller.engineDirectory.path, 'models', 'qwen.gguf'),
+    ).delete();
+    await controller.refresh();
+    expect(controller.available, isFalse);
+    expect(controller.enabled, isFalse);
+  });
+
+  test('both formats, pipes, Unicode inputs and temp-only results', () async {
+    await generate();
+    expect(controller.status, contains('готовы'));
+    expect(controller.excel, isNotNull);
+    expect(controller.sql, isNotNull);
+    expect(calls, hasLength(2));
+    expect(
+      calls.first,
+      containsAll(['excel-normalized', '--gpu-layers', '-1']),
+    );
+    expect(calls.last, contains('sql-simple'));
+    expect(calls.first[calls.first.indexOf('--excel-input') + 1], input.path);
+    expect(
+      await File(
+        p.join(controller.workspace!.path, 'schema.sql'),
+      ).readAsString(),
+      contains('CREATE TABLE'),
+    );
+    expect(
+      p.isWithin(Directory.systemTemp.path, controller.excel!.path),
+      isTrue,
+    );
+    expect(await input.list().isEmpty, isTrue);
+  });
+
+  test(
+    'missing completed is never success even with output and code zero',
+    () async {
+      mode = 'no-completed';
+      await generate();
+      expect(controller.excel, isNull);
+      expect(controller.sql, isNull);
+      expect(controller.status, contains('completed'));
+    },
+  );
+
+  test(
+    'second-format error does not expose a partially completed pair',
+    () async {
+      mode = 'fail-sql';
+      await generate();
+      expect(calls, hasLength(2));
+      expect(controller.excel, isNull);
+      expect(controller.sql, isNull);
+      expect(controller.status, contains('Invalid mapping'));
+    },
+  );
+
+  test('rejects result path outside output directory', () async {
+    mode = 'outside';
+    await generate();
+    expect(controller.excel, isNull);
+    expect(controller.status, contains('неверный путь'));
+  });
+
+  test('saves only selected files without changing temp originals', () async {
+    await generate();
+    final target = p.join(root.path, 'saved');
+    final first = await controller.save(
+      saveExcel: false,
+      saveSql: true,
+      destination: target,
+    );
+    expect(await Directory(first).list().length, 1);
+    expect(await File(p.join(first, 'migration.sql')).exists(), isTrue);
+    expect(await controller.excel!.exists(), isTrue);
+    final second = await controller.save(
+      saveExcel: true,
+      saveSql: false,
+      destination: target,
+    );
+    expect(first, isNot(second));
+    expect(await File(p.join(first, 'migration.sql')).exists(), isTrue);
+  });
+
+  test('empty destination uses Windows known desktop folder', () async {
+    const channel = MethodChannel('helper/background');
+    // Use the same channel name as BackgroundService.
+    final desktop = p.join(root.path, 'OneDrive Desktop');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'getDesktopDirectory');
+      return desktop;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await generate();
+    final saved = await controller.save(
+      saveExcel: true,
+      saveSql: true,
+      destination: '',
+    );
+    expect(p.isWithin(desktop, saved), isTrue);
+    expect(await Directory(saved).list().length, 2);
+  });
+
+  test('new generation removes previous temporary workspace', () async {
+    await generate();
+    final old = controller.workspace!;
+    await generate();
+    expect(await old.exists(), isFalse);
+    expect(controller.excel, isNotNull);
+  });
+
+  test('invalid input is rejected before spawning a process', () async {
+    await controller.generate(
+      excelDirectory: input.path,
+      ddl: '',
+      useGpu: false,
+    );
+    expect(calls, isEmpty);
+    expect(controller.status, contains('Вставьте SQL'));
+  });
+
+  test('CPU works with older engines without a gpu-layers option', () async {
+    await controller.generate(
+      excelDirectory: input.path,
+      ddl: 'CREATE TABLE Item (Id INT PRIMARY KEY);',
+      useGpu: false,
+    );
+    expect(controller.excel, isNotNull);
+    expect(calls.first, isNot(contains('--gpu-layers')));
+  });
+
+  test('quoted Explorer path is normalized', () {
+    expect(unquotePath('  "C:\\Excel Files"  '), 'C:\\Excel Files');
+  });
+
+  test(
+    'cancellation kills the process without exposing partial outputs',
+    () async {
+      mode = 'wait';
+      processStarted = Completer<void>();
+      final running = generate();
+      await processStarted!.future;
+      controller.cancel();
+      await running;
+      expect(controller.busy, isFalse);
+      expect(controller.excel, isNull);
+      expect(controller.sql, isNull);
+      expect(controller.status, contains('отменена'));
+    },
+  );
+}

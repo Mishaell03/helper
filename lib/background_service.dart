@@ -370,6 +370,8 @@ class BackgroundService {
       (await _channel.invokeListMethod<String>('pickMarkdownFiles')) ?? [];
   Future<String> storageDirectory() async =>
       (await _channel.invokeMethod<String>('getStorageDirectory'))!;
+  Future<String> desktopDirectory() async =>
+      (await _channel.invokeMethod<String>('getDesktopDirectory'))!;
 }
 
 String backgroundError(Object error) {
