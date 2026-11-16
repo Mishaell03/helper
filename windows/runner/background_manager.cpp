@@ -334,6 +334,22 @@ BackgroundManager::BackgroundManager(HWND window,
       if (!resetting_data_) result->Error("storage_error", "Удаление данных не подготовлено.");
       else if (!ResetApplicationSettings(&error)) result->Error("storage_error", error);
       else result->Success();
+    } else if (method == "setTextInputActive") {
+      const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
+      if (!enabled) {
+        result->Error("invalid_argument", "Ожидается состояние текстового ввода.");
+        return;
+      }
+      if (*enabled) automation_->Pause("Редактирование текста. Ввод приостановлен.");
+      if (!SetKeyboardActivation(*enabled || recording_)) {
+        result->Error("window_activation_error", "Не удалось изменить режим клавиатурного фокуса.");
+        return;
+      }
+      text_input_active_ = *enabled;
+      SyncAutoHide();
+      UpdateSlotNavigation();
+      UpdateViewerEscape();
+      result->Success();
     } else if (method == "setRecording") {
       const auto* enabled = call.arguments() ? std::get_if<bool>(call.arguments()) : nullptr;
       if (!enabled) {
@@ -341,7 +357,7 @@ BackgroundManager::BackgroundManager(HWND window,
         return;
       }
       if (*enabled) automation_->Pause("Запись горячей клавиши. Ввод приостановлен.");
-      if (!SetKeyboardActivation(*enabled)) {
+      if (!SetKeyboardActivation(*enabled || text_input_active_)) {
         result->Error("window_activation_error", "Не удалось изменить режим клавиатурного фокуса.");
         return;
       }
@@ -525,7 +541,7 @@ void BackgroundManager::UpdateViewerEscape() {
 
 bool BackgroundManager::ViewerEscapeAllowed() const {
   POINT cursor{};
-  return viewer_escape_requested_ && SlotWindowVisible() && !recording_ && !in_move_size_loop_ &&
+  return viewer_escape_requested_ && SlotWindowVisible() && !recording_ && !text_input_active_ && !in_move_size_loop_ &&
       !import_dialog_ && GetCursorPos(&cursor) &&
       GetAncestor(WindowFromPoint(cursor), GA_ROOT) == window_;
 }
@@ -562,7 +578,7 @@ void BackgroundManager::UpdateSlotNavigation() {
   const bool inserting = automation_ && automation_->blocks_slot_navigation();
   if (inserting) slot_navigation_.Disable();
   const bool enabled = slot_navigation_.enabled(SlotWindowVisible(), inserting) &&
-      !recording_ && !resetting_data_ && !import_dialog_;
+      !recording_ && !text_input_active_ && !resetting_data_ && !import_dialog_;
   if (!enabled) {
     ReleaseSlotNavigation();
     return;
@@ -741,7 +757,7 @@ void BackgroundManager::SyncAutoHide(bool activity) {
   const auto now = GetTickCount64();
   auto_hide_.Context(now, SlotWindowVisible(), auto_hide_viewer_,
       auto_hide_flutter_suspended_ || auto_hide_modal_ || auto_hide_pointer_held_ ||
-      recording_ || resetting_data_ || in_move_size_loop_ || import_dialog_.Get() != nullptr);
+      recording_ || text_input_active_ || resetting_data_ || in_move_size_loop_ || import_dialog_.Get() != nullptr);
   if (activity) auto_hide_.Activity(now);
   ArmAutoHide();
 }
@@ -1364,7 +1380,7 @@ bool BackgroundManager::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam
     const auto expected = bindings_[wparam == kSlotPreviousId ? 6 : 7].shortcut;
     if (slot_arrows_registered_ && modifiers == expected.modifiers && key == expected.key &&
         slot_navigation_.enabled(SlotWindowVisible(), automation_->blocks_slot_navigation()) &&
-        !recording_ && !import_dialog_) {
+        !recording_ && !text_input_active_ && !import_dialog_) {
       channel_->InvokeMethod("navigateSlot", std::make_unique<Value>(
           static_cast<int32_t>(wparam == kSlotPreviousId ? -1 : 1)));
     }

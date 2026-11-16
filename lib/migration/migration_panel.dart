@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'migration_controller.dart';
+import '../text_input_activation.dart';
 
 class MigrationPanel extends StatefulWidget {
   const MigrationPanel({super.key, required this.controller});
@@ -87,43 +88,49 @@ class _MigrationPanelState extends State<MigrationPanel> {
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _excel,
-            enabled: !busy,
-            decoration: InputDecoration(
-              labelText: 'Путь к папке с .xlsx',
-              suffixIcon: IconButton(
-                tooltip: 'Вставить путь из буфера',
-                onPressed: busy
-                    ? null
-                    : () async {
-                        final data = await Clipboard.getData(
-                          Clipboard.kTextPlain,
-                        );
-                        if (mounted && !controller.busy) {
-                          _excel.text = data?.text ?? '';
-                        }
-                      },
-                icon: const Icon(Icons.content_paste, size: 16),
+          TextInputActivation(
+            child: TextField(
+              controller: _excel,
+              enabled: !busy,
+              decoration: InputDecoration(
+                labelText: 'Путь к папке с .xlsx',
+                suffixIcon: IconButton(
+                  tooltip: 'Вставить путь из буфера',
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final data = await Clipboard.getData(
+                            Clipboard.kTextPlain,
+                          );
+                          if (mounted && !controller.busy) {
+                            _excel.text = data?.text ?? '';
+                          }
+                        },
+                  icon: const Icon(Icons.content_paste, size: 16),
+                ),
               ),
             ),
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _ddl,
-            enabled: !busy,
-            minLines: 5,
-            maxLines: 12,
-            decoration: const InputDecoration(
-              labelText: 'SQL Server: CREATE TABLE …',
+          TextInputActivation(
+            child: TextField(
+              controller: _ddl,
+              enabled: !busy,
+              minLines: 5,
+              maxLines: 12,
+              decoration: const InputDecoration(
+                labelText: 'SQL Server: CREATE TABLE …',
+              ),
             ),
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _decisions,
-            enabled: !busy,
-            decoration: const InputDecoration(
-              labelText: 'JSON решений колонок (необязательно)',
+          TextInputActivation(
+            child: TextField(
+              controller: _decisions,
+              enabled: !busy,
+              decoration: const InputDecoration(
+                labelText: 'JSON решений колонок (необязательно)',
+              ),
             ),
           ),
           SwitchListTile(
@@ -153,12 +160,14 @@ class _MigrationPanelState extends State<MigrationPanel> {
                 : (value) => setState(() => _saveSql = value),
           ),
           if (_saveExcel || _saveSql)
-            TextField(
-              controller: _destination,
-              enabled: !busy,
-              decoration: const InputDecoration(
-                labelText: 'Каталог сохранения',
-                hintText: 'Пусто — рабочий стол',
+            TextInputActivation(
+              child: TextField(
+                controller: _destination,
+                enabled: !busy,
+                decoration: const InputDecoration(
+                  labelText: 'Каталог сохранения',
+                  hintText: 'Пусто — рабочий стол',
+                ),
               ),
             ),
           Wrap(

@@ -91,6 +91,7 @@ class BackgroundManager {
   HWND previous_foreground_ = nullptr;
   bool composition_ready_ = false;
   bool recording_ = false;
+  bool text_input_active_ = false;
   bool resetting_data_ = false;
   AutoHidePolicy auto_hide_;
   bool auto_hide_viewer_ = false;

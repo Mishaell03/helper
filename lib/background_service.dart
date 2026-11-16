@@ -372,6 +372,8 @@ class BackgroundService {
       (await _channel.invokeMethod<String>('getStorageDirectory'))!;
   Future<String> desktopDirectory() async =>
       (await _channel.invokeMethod<String>('getDesktopDirectory'))!;
+  Future<void> setTextInputActive(bool active) =>
+      _channel.invokeMethod<void>('setTextInputActive', active);
 }
 
 String backgroundError(Object error) {
