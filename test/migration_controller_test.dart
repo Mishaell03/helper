@@ -338,6 +338,57 @@ void main() {
   });
 
   test(
+    'SQL directory stages all SQL files with original names and bytes',
+    () async {
+      final source = await Directory(p.join(root.path, 'Схема SQL')).create();
+      final first = File(p.join(source.path, '01_tables.sql'));
+      final second = File(p.join(source.path, '02_relations.SQL'));
+      await first.writeAsString('CREATE TABLE A (Id INT);');
+      final utf16 = [255, 254, 65, 0];
+      await second.writeAsBytes(utf16);
+      await File(p.join(source.path, 'notes.txt')).writeAsString('ignore');
+      final nested = await Directory(p.join(source.path, 'nested')).create();
+      await File(p.join(nested.path, 'skip.sql')).writeAsString('ignore');
+      await controller.generate(
+        excelDirectory: input.path,
+        sqlFile: '"${source.path}"',
+        useGpu: false,
+      );
+      expect(controller.excel, isNotNull);
+      final staged = Directory(
+        calls.first[calls.first.indexOf('--sql-input') + 1],
+      );
+      expect(p.isWithin(controller.workspace!.path, staged.path), isTrue);
+      expect(await staged.list().length, 2);
+      expect(
+        await File(p.join(staged.path, p.basename(first.path))).readAsString(),
+        await first.readAsString(),
+      );
+      expect(
+        await File(p.join(staged.path, p.basename(second.path))).readAsBytes(),
+        utf16,
+      );
+      expect(await first.exists(), isTrue);
+      expect(await second.readAsBytes(), utf16);
+      expect(calls.last[calls.last.indexOf('--sql-input') + 1], staged.path);
+    },
+  );
+
+  test(
+    'SQL directory without SQL files is rejected before launching',
+    () async {
+      final source = await Directory(p.join(root.path, 'empty-sql')).create();
+      await controller.generate(
+        excelDirectory: input.path,
+        sqlFile: source.path,
+        useGpu: false,
+      );
+      expect(calls, isEmpty);
+      expect(controller.status, contains('В папке нет файлов .sql'));
+    },
+  );
+
+  test(
     'cancellation kills the process without exposing partial outputs',
     () async {
       mode = 'wait';

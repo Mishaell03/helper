@@ -74,10 +74,10 @@ void main() {
       await tester.enterText(ddl, 'CREATE TABLE A (Id INT);');
       await tester.tap(find.byType(DropdownButtonFormField<bool>));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Путь к SQL-файлу').last);
+      await tester.tap(find.text('Файл или папка SQL').last);
       await tester.pumpAndSettle();
       expect(excel, findsOneWidget);
-      expect(field('Путь к файлу .sql'), findsOneWidget);
+      expect(field('Путь к файлу .sql или папке'), findsOneWidget);
       expect(ddl, findsNothing);
       expect(tester.widget<TextField>(excel).controller!.text, 'C:\\Excel');
       await tester.tap(find.byType(DropdownButtonFormField<bool>));

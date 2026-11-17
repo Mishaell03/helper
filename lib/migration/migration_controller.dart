@@ -128,23 +128,58 @@ class MigrationController extends ChangeNotifier {
       if (!await input.exists()) {
         throw const FormatException('Папка Excel не найдена.');
       }
-      final source = sqlFile == null ? null : File(unquotePath(sqlFile));
-      if (source != null &&
-          (p.extension(source.path).toLowerCase() != '.sql' ||
-              !await source.exists())) {
-        throw const FormatException(
-          'Укажите существующий локальный файл .sql.',
-        );
+      final sourcePath = sqlFile == null ? null : unquotePath(sqlFile);
+      final sources = <File>[];
+      var fromDirectory = false;
+      if (sourcePath != null) {
+        fromDirectory = await Directory(sourcePath).exists();
+        if (fromDirectory) {
+          await for (final entry in Directory(
+            sourcePath,
+          ).list(followLinks: false)) {
+            if (p.extension(entry.path).toLowerCase() != '.sql') continue;
+            if (entry is Link) {
+              throw const FormatException(
+                'Ссылки на SQL-файлы не поддерживаются.',
+              );
+            }
+            if (entry is File) sources.add(entry);
+          }
+          sources.sort(
+            (a, b) => p.basename(a.path).compareTo(p.basename(b.path)),
+          );
+          if (sources.isEmpty) {
+            throw const FormatException(
+              'В папке нет файлов .sql. Вложенные папки не просматриваются.',
+            );
+          }
+        } else if (p.extension(sourcePath).toLowerCase() == '.sql' &&
+            await File(sourcePath).exists()) {
+          sources.add(File(sourcePath));
+        } else {
+          throw const FormatException(
+            'Укажите существующий локальный файл .sql или папку с SQL-файлами.',
+          );
+        }
       }
-      if (source == null && ddl.trim().isEmpty) {
+      if (sourcePath == null && ddl.trim().isEmpty) {
         throw const FormatException('Вставьте SQL создания таблиц.');
       }
       await cleanup();
       workspace = await Directory.systemTemp.createTemp('helper-migration-');
       final schema = File(p.join(workspace!.path, 'schema.sql'));
-      if (source != null) {
+      var schemaPath = schema.path;
+      if (fromDirectory) {
+        final staged = await Directory(
+          p.join(workspace!.path, 'sql-input'),
+        ).create();
+        for (final file in sources) {
+          await file.copy(p.join(staged.path, p.basename(file.path)));
+        }
+        schemaPath = staged.path;
+      } else if (sources.isNotEmpty) {
         // Preserve BOM/UTF-16 supported by the engine, never rewrite the source.
-        await source.copy(schema.path);
+        await sources.single.copy(schema.path);
       } else {
         await schema.writeAsString(ddl, encoding: utf8, flush: true);
       }
@@ -156,7 +191,7 @@ class MigrationController extends ChangeNotifier {
         generated[format] = await _generateFormat(
           format,
           input.absolute.path,
-          schema.path,
+          schemaPath,
           output,
           useGpu,
         );

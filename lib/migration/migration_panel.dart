@@ -150,7 +150,7 @@ class _MigrationPanelState extends State<MigrationPanel> {
             decoration: const InputDecoration(labelText: 'Источник SQL'),
             items: const [
               DropdownMenuItem(value: false, child: Text('Ввести SQL')),
-              DropdownMenuItem(value: true, child: Text('Путь к SQL-файлу')),
+              DropdownMenuItem(value: true, child: Text('Файл или папка SQL')),
             ],
             onChanged: busy
                 ? null
@@ -163,8 +163,9 @@ class _MigrationPanelState extends State<MigrationPanel> {
                 controller: _sqlFile,
                 enabled: !busy,
                 decoration: const InputDecoration(
-                  labelText: 'Путь к файлу .sql',
-                  helperText: 'Локальный файл, не интернет-ссылка.',
+                  labelText: 'Путь к файлу .sql или папке',
+                  helperText:
+                      'Из папки берутся все .sql без вложенных каталогов.',
                 ),
               ),
             )
