@@ -159,7 +159,9 @@ void main() {
       saveSql: false,
       destination: target,
     );
-    expect(first, isNot(second));
+    expect(first, target);
+    expect(second, target);
+    expect(await Directory(target).list().length, 2);
     expect(await File(p.join(first, 'migration.sql')).exists(), isTrue);
   });
 
@@ -180,7 +182,7 @@ void main() {
       saveSql: true,
       destination: '',
     );
-    expect(p.isWithin(desktop, saved), isTrue);
+    expect(saved, desktop);
     expect(await Directory(saved).list().length, 2);
   });
 
@@ -254,6 +256,7 @@ void main() {
       final target = Directory(p.join(root.path, 'Результаты'));
       final moved = await controller.moveExcel('"${target.path}"');
       expect(p.isWithin(target.path, moved), isTrue);
+      expect(p.dirname(moved), target.path);
       expect(await temporary.exists(), isFalse);
       expect(await File(moved).readAsBytes(), content);
       expect(controller.excel!.path, moved);
@@ -294,6 +297,7 @@ void main() {
     await generate();
     final file = await controller.moveExcel('');
     expect(p.isWithin(desktop, file), isTrue);
+    expect(p.dirname(file), desktop);
     expect(await File(file).exists(), isTrue);
   });
 
@@ -308,6 +312,37 @@ void main() {
       );
       expect(await original.exists(), isTrue);
       expect(controller.excelMoved, isFalse);
+    },
+  );
+
+  test(
+    'direct output preserves existing files with numbered suffixes',
+    () async {
+      await generate();
+      final target = await Directory(
+        p.join(root.path, 'direct-output'),
+      ).create();
+      final existingSql = File(p.join(target.path, 'migration.sql'));
+      final existingExcel = File(p.join(target.path, 'Normalized.xlsx'));
+      await existingSql.writeAsString('original SQL');
+      await existingExcel.writeAsString('original workbook');
+      await controller.save(
+        saveExcel: false,
+        saveSql: true,
+        destination: target.path,
+      );
+      final moved = await controller.moveExcel(target.path);
+      expect(await existingSql.readAsString(), 'original SQL');
+      expect(await existingExcel.readAsString(), 'original workbook');
+      expect(
+        await File(p.join(target.path, 'migration (1).sql')).exists(),
+        isTrue,
+      );
+      expect(moved, p.join(target.path, 'Normalized (1).xlsx'));
+      expect(
+        await target.list().where((entry) => entry is Directory).isEmpty,
+        isTrue,
+      );
     },
   );
 

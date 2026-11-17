@@ -293,7 +293,7 @@ class MigrationController extends ChangeNotifier {
     _process?.kill();
   }
 
-  /// Separate subdirectory and exclusive file creation prevent overwriting data.
+  /// Save directly in the selected directory, reserving a unique filename.
   Future<String> save({
     required bool saveExcel,
     required bool saveSql,
@@ -305,18 +305,13 @@ class MigrationController extends ChangeNotifier {
     busy = true;
     _changed();
     try {
-      final target = unquotePath(destination);
-      final desktop = target.isEmpty
-          ? await BackgroundService.instance.desktopDirectory()
-          : target;
-      final parent = Directory(desktop);
-      await parent.create(recursive: true);
-      final saved = await parent.createTemp('ExcelMigration-');
+      final parent = await _destination(destination);
+      final saved = <File>[];
       for (final file in [if (saveExcel) excel!, if (saveSql) sql!]) {
-        await file.copy(p.join(saved.path, p.basename(file.path)));
+        saved.add(await _copyExclusive(file, parent));
       }
-      status = 'Сохранено: ${saved.path}';
-      return saved.path;
+      status = 'Сохранено:\n${saved.map((file) => file.path).join('\n')}';
+      return parent.path;
     } finally {
       busy = false;
       if (_disposed) await cleanup();
@@ -364,25 +359,9 @@ class MigrationController extends ChangeNotifier {
     busy = true;
     _changed();
     try {
-      final target = unquotePath(destination);
-      final parent = Directory(
-        target.isEmpty
-            ? await BackgroundService.instance.desktopDirectory()
-            : target,
-      );
-      await parent.create(recursive: true);
-      final resolved = await parent.resolveSymbolicLinks();
-      final temporary = await workspace!.resolveSymbolicLinks();
-      if (p.equals(temporary, resolved) || p.isWithin(temporary, resolved)) {
-        throw const FormatException(
-          'Выберите каталог вне временной папки задачи.',
-        );
-      }
-      final folder = await Directory(resolved).createTemp('ExcelMigration-');
+      final folder = await _destination(destination);
       final original = excel!;
-      final moved = await original.copy(
-        p.join(folder.path, p.basename(original.path)),
-      );
+      final moved = await _copyExclusive(original, folder);
       if (await original.length() != await moved.length()) {
         throw FileSystemException(
           'Не удалось полностью скопировать Excel.',
@@ -406,6 +385,54 @@ class MigrationController extends ChangeNotifier {
       if (_disposed) await cleanup();
       _changed();
     }
+  }
+
+  Future<Directory> _destination(String destination) async {
+    final target = unquotePath(destination);
+    final parent = Directory(
+      target.isEmpty
+          ? await BackgroundService.instance.desktopDirectory()
+          : target,
+    );
+    await parent.create(recursive: true);
+    final resolved = await parent.resolveSymbolicLinks();
+    final temporary = await workspace!.resolveSymbolicLinks();
+    if (p.equals(temporary, resolved) || p.isWithin(temporary, resolved)) {
+      throw const FormatException(
+        'Выберите каталог вне временной папки задачи.',
+      );
+    }
+    return Directory(resolved);
+  }
+
+  Future<File> _copyExclusive(File source, Directory directory) async {
+    final name = p.basenameWithoutExtension(source.path);
+    final extension = p.extension(source.path);
+    for (var index = 0; index < 10000; index++) {
+      final suffix = index == 0 ? '' : ' ($index)';
+      final target = File(p.join(directory.path, '$name$suffix$extension'));
+      try {
+        await target.create(exclusive: true);
+      } on FileSystemException {
+        if (await FileSystemEntity.type(target.path, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+          continue;
+        }
+        rethrow;
+      }
+      try {
+        await source.openRead().pipe(target.openWrite());
+        return target;
+      } catch (_) {
+        try {
+          await target.delete();
+        } on FileSystemException {
+          // Preserve the original copy error.
+        }
+        rethrow;
+      }
+    }
+    throw const FormatException('Не удалось выбрать свободное имя файла.');
   }
 
   @override
