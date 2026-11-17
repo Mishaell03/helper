@@ -5,8 +5,9 @@ import 'migration_controller.dart';
 import '../text_input_activation.dart';
 
 class MigrationPanel extends StatefulWidget {
-  const MigrationPanel({super.key, required this.controller});
+  const MigrationPanel({super.key, required this.controller, this.onImportSql});
   final MigrationController controller;
+  final Future<void> Function(String)? onImportSql;
 
   @override
   State<MigrationPanel> createState() => _MigrationPanelState();
@@ -17,40 +18,37 @@ class _MigrationPanelState extends State<MigrationPanel> {
   final _ddl = TextEditingController();
   final _sqlFile = TextEditingController();
   final _destination = TextEditingController();
-  final _decisions = TextEditingController();
   bool _gpu = true;
-  bool _saveExcel = false;
+  bool _moveExcel = false;
   bool _saveSql = false;
   bool _starting = false;
   bool _sqlFromFile = false;
+  bool _processing = false;
+  String _savedLocations = '';
 
   @override
   void dispose() {
-    for (final controller in [
-      _excel,
-      _ddl,
-      _sqlFile,
-      _destination,
-      _decisions,
-    ]) {
+    for (final controller in [_excel, _ddl, _sqlFile, _destination]) {
       controller.dispose();
     }
     super.dispose();
   }
 
   Future<void> _generate() async {
-    setState(() => _starting = true);
+    setState(() {
+      _starting = true;
+      _savedLocations = '';
+    });
     try {
       await widget.controller.generate(
         excelDirectory: _excel.text,
         ddl: _ddl.text,
         sqlFile: _sqlFromFile ? _sqlFile.text : null,
         useGpu: _gpu,
-        decisions: _decisions.text,
       );
       if (mounted &&
           widget.controller.excel != null &&
-          (_saveExcel || _saveSql)) {
+          (_moveExcel || _saveSql)) {
         await _save();
       }
     } finally {
@@ -59,28 +57,54 @@ class _MigrationPanelState extends State<MigrationPanel> {
   }
 
   Future<void> _save() async {
+    setState(() => _processing = true);
     try {
-      await widget.controller.save(
-        saveExcel: _saveExcel,
-        saveSql: _saveSql,
-        destination: _destination.text,
-      );
+      final locations = <String>[];
+      if (_saveSql) {
+        final folder = await widget.controller.save(
+          saveExcel: false,
+          saveSql: true,
+          destination: _destination.text,
+        );
+        locations.add('SQL сохранён: $folder');
+      }
+      if (_moveExcel && !widget.controller.excelMoved) {
+        final file = await widget.controller.moveExcel(_destination.text);
+        locations.add('Excel перемещён: $file');
+      }
+      if (mounted && locations.isNotEmpty) {
+        setState(() => _savedLocations = locations.join('\n'));
+      }
     } catch (error) {
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Не удалось сохранить'),
-          content: Text('$error'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Закрыть'),
-            ),
-          ],
-        ),
-      );
+      await _showError(error);
+    } finally {
+      if (mounted) setState(() => _processing = false);
     }
+  }
+
+  Future<void> _importSql() async {
+    try {
+      await widget.controller.importSql(widget.onImportSql!);
+    } catch (error) {
+      await _showError(error);
+    }
+  }
+
+  Future<void> _showError(Object error) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Не удалось обработать результат'),
+        content: Text('$error'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -88,7 +112,7 @@ class _MigrationPanelState extends State<MigrationPanel> {
     animation: widget.controller,
     builder: (context, _) {
       final controller = widget.controller;
-      final busy = controller.busy || _starting;
+      final busy = controller.busy || _starting || _processing;
       return ListView(
         padding: const EdgeInsets.all(12),
         children: [
@@ -157,15 +181,6 @@ class _MigrationPanelState extends State<MigrationPanel> {
               ),
             ),
           const SizedBox(height: 8),
-          TextInputActivation(
-            child: TextField(
-              controller: _decisions,
-              enabled: !busy,
-              decoration: const InputDecoration(
-                labelText: 'JSON решений колонок (необязательно)',
-              ),
-            ),
-          ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('GPU / CUDA (1650 Ti)'),
@@ -178,11 +193,14 @@ class _MigrationPanelState extends State<MigrationPanel> {
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Сохранить Excel'),
-            value: _saveExcel,
+            title: const Text('Переместить готовый Excel'),
+            subtitle: const Text(
+              'Автоматически после генерации. Исходные книги остаются на месте.',
+            ),
+            value: _moveExcel,
             onChanged: busy
                 ? null
-                : (value) => setState(() => _saveExcel = value),
+                : (value) => setState(() => _moveExcel = value),
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -192,13 +210,13 @@ class _MigrationPanelState extends State<MigrationPanel> {
                 ? null
                 : (value) => setState(() => _saveSql = value),
           ),
-          if (_saveExcel || _saveSql)
+          if (_moveExcel || _saveSql)
             TextInputActivation(
               child: TextField(
                 controller: _destination,
                 enabled: !busy,
                 decoration: const InputDecoration(
-                  labelText: 'Каталог сохранения',
+                  labelText: 'Каталог назначения',
                   hintText: 'Пусто — рабочий стол',
                 ),
               ),
@@ -215,15 +233,30 @@ class _MigrationPanelState extends State<MigrationPanel> {
                   onPressed: controller.cancel,
                   child: const Text('Отменить'),
                 ),
-              if (controller.excel != null && (_saveExcel || _saveSql))
+              if (controller.excel != null &&
+                  ((_moveExcel && !controller.excelMoved) || _saveSql))
                 TextButton(
                   onPressed: busy ? null : _save,
-                  child: const Text('Сохранить выбранное'),
+                  child: const Text('Сохранить / переместить'),
+                ),
+              if (controller.sql != null && widget.onImportSql != null)
+                TextButton.icon(
+                  onPressed: busy || controller.sqlImported ? null : _importSql,
+                  icon: Icon(
+                    controller.sqlImported ? Icons.check : Icons.library_add,
+                    size: 16,
+                  ),
+                  label: Text(
+                    controller.sqlImported
+                        ? 'SQL уже в библиотеке'
+                        : 'Добавить SQL в библиотеку',
+                  ),
                 ),
             ],
           ),
           if (busy) const LinearProgressIndicator(),
           SelectableText(controller.status),
+          if (_savedLocations.isNotEmpty) SelectableText(_savedLocations),
           if (controller.excel != null)
             SelectableText(
               'Excel: ${controller.excel!.path}\nSQL: ${controller.sql!.path}',

@@ -116,6 +116,17 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
     }
   }
 
+  Future<void> _importGeneratedSql(String filename) async {
+    final controller = _controller;
+    if (controller == null || _installingUpdate || _resettingData) {
+      throw const FormatException('Библиотека файлов пока недоступна.');
+    }
+    final result = await controller.importPaths([filename]);
+    if (result.errors.isNotEmpty) {
+      throw FormatException(result.errors.join('\n'));
+    }
+  }
+
   void _migrationChanged() {
     if (!mounted) return;
     setState(() {
@@ -904,7 +915,10 @@ class _MarkdownPanelState extends State<MarkdownPanel> {
                       if (_migration?.enabled == true)
                         Offstage(
                           offstage: _view != _View.migration,
-                          child: MigrationPanel(controller: _migration!),
+                          child: MigrationPanel(
+                            controller: _migration!,
+                            onImportSql: _importGeneratedSql,
+                          ),
                         ),
                     ],
                   ),

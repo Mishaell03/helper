@@ -29,6 +29,8 @@ class MigrationController extends ChangeNotifier {
   Directory? workspace;
   File? excel;
   File? sql;
+  bool sqlImported = false;
+  bool excelMoved = false;
   bool get canCancel => busy && excel == null && sql == null;
   String status = '';
   String get executable => p.join(engineDirectory.path, 'generator.exe');
@@ -107,13 +109,14 @@ class MigrationController extends ChangeNotifier {
     String ddl = '',
     String? sqlFile,
     required bool useGpu,
-    String decisions = '',
   }) async {
     if (busy || !enabled) return;
     busy = true;
     _cancelled = false;
     excel = null;
     sql = null;
+    sqlImported = false;
+    excelMoved = false;
     status = 'Подготовка…';
     _changed();
     try {
@@ -136,10 +139,6 @@ class MigrationController extends ChangeNotifier {
       if (source == null && ddl.trim().isEmpty) {
         throw const FormatException('Вставьте SQL создания таблиц.');
       }
-      final config = unquotePath(decisions);
-      if (config.isNotEmpty && !await File(config).exists()) {
-        throw const FormatException('Файл решений колонок не найден.');
-      }
       await cleanup();
       workspace = await Directory.systemTemp.createTemp('helper-migration-');
       final schema = File(p.join(workspace!.path, 'schema.sql'));
@@ -160,7 +159,6 @@ class MigrationController extends ChangeNotifier {
           schema.path,
           output,
           useGpu,
-          config.isEmpty ? '' : File(config).absolute.path,
         );
       }
       // Publish only after BOTH processes have confirmed completion.
@@ -186,7 +184,6 @@ class MigrationController extends ChangeNotifier {
     String schema,
     Directory output,
     bool gpu,
-    String decisions,
   ) async {
     final process = await startProcess(executable, [
       'generate-migration',
@@ -202,7 +199,6 @@ class MigrationController extends ChangeNotifier {
       p.join(engineDirectory.path, 'models', 'qwen.gguf'),
       // CPU is the engine default. Omit the flag for older CPU-only builds.
       if (gpu) ...['--gpu-layers', '-1'],
-      if (decisions.isNotEmpty) ...['--column-decisions', decisions],
       '--json-events',
     ], workspace!.path);
     _process = process;
@@ -301,6 +297,80 @@ class MigrationController extends ChangeNotifier {
     workspace = null;
     excel = null;
     sql = null;
+    sqlImported = false;
+    excelMoved = false;
+  }
+
+  Future<void> importSql(Future<void> Function(String) import) async {
+    if (busy || sql == null || excel == null) {
+      throw const FormatException('Сначала создайте Excel и SQL.');
+    }
+    if (sqlImported) return;
+    busy = true;
+    _changed();
+    try {
+      await import(sql!.path);
+      sqlImported = true;
+      status = 'SQL добавлен в библиотеку файлов Helper.';
+    } finally {
+      busy = false;
+      if (_disposed) await cleanup();
+      _changed();
+    }
+  }
+
+  /// Only the generated workbook is moved. User input books are never touched.
+  /// Copy-then-delete supports destinations on a different volume.
+  Future<String> moveExcel(String destination) async {
+    if (busy || excel == null || sql == null) {
+      throw const FormatException('Сначала создайте Excel и SQL.');
+    }
+    if (excelMoved) return excel!.path;
+    busy = true;
+    _changed();
+    try {
+      final target = unquotePath(destination);
+      final parent = Directory(
+        target.isEmpty
+            ? await BackgroundService.instance.desktopDirectory()
+            : target,
+      );
+      await parent.create(recursive: true);
+      final resolved = await parent.resolveSymbolicLinks();
+      final temporary = await workspace!.resolveSymbolicLinks();
+      if (p.equals(temporary, resolved) || p.isWithin(temporary, resolved)) {
+        throw const FormatException(
+          'Выберите каталог вне временной папки задачи.',
+        );
+      }
+      final folder = await Directory(resolved).createTemp('ExcelMigration-');
+      final original = excel!;
+      final moved = await original.copy(
+        p.join(folder.path, p.basename(original.path)),
+      );
+      if (await original.length() != await moved.length()) {
+        throw FileSystemException(
+          'Не удалось полностью скопировать Excel.',
+          moved.path,
+        );
+      }
+      try {
+        await original.delete();
+      } on FileSystemException {
+        throw FileSystemException(
+          'Excel скопирован, но удалить временный оригинал не удалось. Копия сохранена.',
+          moved.path,
+        );
+      }
+      excel = moved;
+      excelMoved = true;
+      status = 'Excel перемещён: ${moved.path}';
+      return moved.path;
+    } finally {
+      busy = false;
+      if (_disposed) await cleanup();
+      _changed();
+    }
   }
 
   @override

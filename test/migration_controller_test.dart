@@ -98,6 +98,7 @@ void main() {
       containsAll(['excel-normalized', '--gpu-layers', '-1']),
     );
     expect(calls.last, contains('sql-simple'));
+    expect(calls.expand((call) => call), isNot(contains('--column-decisions')));
     expect(calls.first[calls.first.indexOf('--excel-input') + 1], input.path);
     expect(
       await File(
@@ -214,6 +215,101 @@ void main() {
   test('quoted Explorer path is normalized', () {
     expect(unquotePath('  "C:\\Excel Files"  '), 'C:\\Excel Files');
   });
+
+  test('SQL can be added to the library once per generated pair', () async {
+    await generate();
+    final imported = <String>[];
+    await controller.importSql((file) async => imported.add(file));
+    await controller.importSql((file) async => imported.add(file));
+    expect(imported, [controller.sql!.path]);
+    expect(controller.sqlImported, isTrue);
+    expect(await controller.sql!.exists(), isTrue);
+    await generate();
+    expect(controller.sqlImported, isFalse);
+  });
+
+  test('failed SQL import preserves output and allows retry', () async {
+    await generate();
+    await expectLater(
+      controller.importSql(
+        (file) async => throw const FormatException('library error'),
+      ),
+      throwsFormatException,
+    );
+    expect(controller.sqlImported, isFalse);
+    expect(controller.busy, isFalse);
+    expect(await controller.sql!.exists(), isTrue);
+    await controller.importSql((file) async {});
+    expect(controller.sqlImported, isTrue);
+  });
+
+  test(
+    'generated Excel is moved without touching inputs and survives cleanup',
+    () async {
+      final inputBook = File(p.join(input.path, 'original.xlsx'));
+      await inputBook.writeAsString('untouched input');
+      await generate();
+      final temporary = controller.excel!;
+      final content = await temporary.readAsBytes();
+      final target = Directory(p.join(root.path, 'Результаты'));
+      final moved = await controller.moveExcel('"${target.path}"');
+      expect(p.isWithin(target.path, moved), isTrue);
+      expect(await temporary.exists(), isFalse);
+      expect(await File(moved).readAsBytes(), content);
+      expect(controller.excel!.path, moved);
+      expect(controller.excelMoved, isTrue);
+      expect(await controller.sql!.exists(), isTrue);
+      expect(await controller.moveExcel(target.path), moved);
+      await controller.cleanup();
+      expect(await File(moved).exists(), isTrue);
+      expect(await inputBook.readAsString(), 'untouched input');
+    },
+  );
+
+  test('failed Excel transfer leaves its temporary original intact', () async {
+    await generate();
+    final original = controller.excel!;
+    final invalid = File(p.join(root.path, 'not-a-directory'));
+    await invalid.writeAsString('existing file');
+    await expectLater(
+      controller.moveExcel(invalid.path),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(controller.busy, isFalse);
+    expect(controller.excelMoved, isFalse);
+    expect(await original.exists(), isTrue);
+    expect(await invalid.readAsString(), 'existing file');
+  });
+
+  test('empty Excel destination resolves the Windows desktop', () async {
+    const channel = MethodChannel('helper/background');
+    final desktop = p.join(root.path, 'Перенаправленный рабочий стол');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'getDesktopDirectory');
+      return desktop;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await generate();
+    final file = await controller.moveExcel('');
+    expect(p.isWithin(desktop, file), isTrue);
+    expect(await File(file).exists(), isTrue);
+  });
+
+  test(
+    'cannot move Excel into the workspace that cleanup will delete',
+    () async {
+      await generate();
+      final original = controller.excel!;
+      await expectLater(
+        controller.moveExcel(p.join(controller.workspace!.path, 'nested')),
+        throwsFormatException,
+      );
+      expect(await original.exists(), isTrue);
+      expect(controller.excelMoved, isFalse);
+    },
+  );
 
   test('SQL file is copied to temp without altering its bytes', () async {
     final source = File(p.join(root.path, 'Схема таблиц.SQL'));
