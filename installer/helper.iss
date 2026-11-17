@@ -56,7 +56,7 @@ begin
     (CompareText(Path, ExpandConstant('{win}')) <> 0) and
     (CompareText(Path, ExpandConstant('{sys}')) <> 0) and
     (CompareText(Path, ExpandConstant('{autopf}')) <> 0) and
-    (CompareText(Path, ExpandConstant('{userprofile}')) <> 0) and
+    (CompareText(Path, GetEnv('USERPROFILE')) <> 0) and
     (CompareText(Path, ExpandConstant('{userdesktop}')) <> 0) and
     (CompareText(Path, ExpandConstant('{userdocs}')) <> 0) and
     (CompareText(Path, ExpandConstant('{localappdata}')) <> 0) and
