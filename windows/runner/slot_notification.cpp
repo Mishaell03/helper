@@ -21,7 +21,6 @@ constexpr wchar_t kSettingsPath[] = L"Software\\Helper\\Window";
 constexpr wchar_t kEnabledValue[] = L"SlotNotificationEnabled";
 constexpr wchar_t kPositionValue[] = L"SlotNotificationPositionV1";
 constexpr UINT_PTR kHideTimer = 1;
-constexpr UINT kRefreshSurface = WM_APP + 1; // This independent HWND's queue.
 
 SlotNotificationArea Area(const RECT& r) { return {r.left, r.top, r.right, r.bottom}; }
 MONITORINFOEXW MonitorInfo(HMONITOR monitor) {
@@ -125,6 +124,9 @@ bool SlotNotification::Create() {
   native_error_ = {};
   affinity_applied_ = false;
   affinity_readback_noted_ = false;
+  composition_ready_ = false;
+  parking_ = CaptureWindowParking{};
+  hidden_ = true;
   window_ = CreateWindowExW(SlotNotificationSurface::kExStyle,
       kClassName, L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), this);
   if (!window_) {
@@ -133,11 +135,6 @@ bool SlotNotification::Create() {
     return native_error_.Win32("CreateWindowExW", code);
   }
   TraceCaptureApi("CreateWindowExW(DWM redirected, non-layered)", window_, true);
-  if (!SlotNotificationSurface::Configure(window_, &native_error_)) {
-    DestroyWindow(window_);
-    return false;
-  }
-  TraceCapture("slot_notification.dwm_surface_ready", window_, true, false);
   return true;
 }
 
@@ -157,6 +154,12 @@ bool SlotNotification::Protect(bool refresh) {
   const HRESULT composed = DwmIsCompositionEnabled(&composition);
   if (FAILED(composed)) return native_error_.HResult("DwmIsCompositionEnabled", composed);
   if (!composition) return native_error_.HResult("DwmIsCompositionEnabled(disabled)", DWM_E_COMPOSITIONDISABLED);
+  if (refresh || !composition_ready_) {
+    affinity_applied_ = false;
+    if (!SlotNotificationSurface::Configure(window_, &native_error_)) return false;
+    composition_ready_ = true;
+    TraceCapture("slot_notification.dwm_surface_ready", window_, hidden_, parking_.parked());
+  }
   DWORD affinity = WDA_NONE;
   DWORD error = ERROR_SUCCESS;
   if (refresh) affinity_applied_ = false;
@@ -195,13 +198,14 @@ void SlotNotification::NativeFailed(const SlotSurfaceError& error) {
   native_error_ = failure;
   Dismiss();
   TraceCaptureApi(failure.operation, window_, false, failure.win32, failure.hresult);
-  TraceCapture("slot_notification.failure", window_, true, false, failure.win32);
+  TraceCapture("slot_notification.failure", window_, true, parking_.parked(), failure.win32);
   std::ostringstream message;
   message << "Подсказка блока не показана. Ошибка " << failure.operation;
   if (failure.graphics_status >= 0) message << ": GDI+ status " << failure.graphics_status;
   else if (FAILED(failure.hresult)) message << ": HRESULT 0x" << std::hex
       << static_cast<unsigned long>(failure.hresult) << std::dec;
   else message << ": Win32 " << failure.win32 << " (" << CaptureErrorMessage(failure.win32) << ')';
+  if (!failure.detail.empty()) message << ": " << failure.detail;
   message << ". Сборка Windows " << CaptureWindowsBuild() << ". Показ без защиты запрещён.";
   Fail(message.str());
 }
@@ -290,10 +294,54 @@ bool SlotNotification::Render(HMONITOR monitor, const POINT* requested) {
   location = ClampSlotNotification(Area(info.rcWork), width, height, location);
   rendering_ = true;
   render_message_failed_ = false;
+  // Unlike the main Flutter frame, this renderer changes the HWND region.
+  // Do not carry proof from the pre-resize/pre-region surface into the next
+  // frame. On Win10 preserve WS_VISIBLE and keep that transition off-screen.
+  if (UseStableCaptureSurface() && IsWindowVisible(window_) && !parking_.parked() &&
+      !parking_.Park(window_)) {
+    rendering_ = false;
+    // Park also returns false for visibility/iconic preconditions and has no
+    // extended-error contract. Do not mislabel a stale GetLastError as its cause.
+    return native_error_.HResult("CaptureWindowParking::Park(frame)", E_FAIL);
+  }
+  affinity_applied_ = false;
   const bool result = surface_.SetFrame(window_, pixels, width, height,
       static_cast<int>(location.x), static_cast<int>(location.y), &native_error_);
+  if (result) {
+    const RECT restore_bounds{static_cast<LONG>(location.x), static_cast<LONG>(location.y),
+        static_cast<LONG>(location.x + width), static_cast<LONG>(location.y + height)};
+    parking_.SetRestoreBounds(restore_bounds);
+  }
   rendering_ = false;
-  return result && !render_message_failed_;
+  return result && !render_message_failed_ && Protect();
+}
+
+bool SlotNotification::Present() {
+  if (!Protect()) { ProtectionFailed(); return false; }
+  TraceCapture("slot_notification.protected", window_, hidden_, parking_.parked());
+  rendering_ = true; // Restore can synchronously deliver DPI/paint messages too.
+  render_message_failed_ = false;
+  const bool restored = parking_.Restore(window_);
+  const DWORD restore_error = restored ? ERROR_SUCCESS : GetLastError();
+  rendering_ = false;
+  if (!restored) {
+    native_error_.Win32("CaptureWindowParking::Restore", restore_error);
+    NativeFailed(native_error_);
+    return false;
+  }
+  if (render_message_failed_) { NativeFailed(native_error_); return false; }
+  paint_ok_ = true;
+  // A parked Win10 window is already WS_VISIBLE; never hide/show it on reveal.
+  if (!IsWindowVisible(window_) || IsIconic(window_)) ShowWindow(window_, SW_SHOWNOACTIVATE);
+  if (!paint_ok_) return false;
+  if (!IsWindowVisible(window_) || IsIconic(window_)) {
+    native_error_.HResult("VerifyVisibility(after SW_SHOWNOACTIVATE)", E_FAIL);
+    NativeFailed(native_error_);
+    return false;
+  }
+  if (!Repaint()) return false;
+  hidden_ = false;
+  return true;
 }
 
 bool SlotNotification::Repaint() {
@@ -321,7 +369,7 @@ void SlotNotification::SelectionChanged(int64_t id, const std::wstring& name, bo
   }
   text_ = SlotNotificationText(id, name);
   RECT current{};
-  const bool moving = lifetime_.dragging();
+  const bool moving = lifetime_.dragging() && !hidden_ && !parking_.parked();
   if (moving && !GetWindowRect(window_, &current)) {
     native_error_.Win32("GetWindowRect(drag)", GetLastError());
     NativeFailed(native_error_);
@@ -333,24 +381,8 @@ void SlotNotification::SelectionChanged(int64_t id, const std::wstring& name, bo
     NativeFailed(native_error_);
     return;
   }
-  TraceCapture("slot_notification.frame_ready", window_, !IsWindowVisible(window_), false);
-  // Resize/region changes retain affinity. Verify again before the first show.
-  if (!Protect()) {
-    ProtectionFailed();
-    return;
-  }
-  TraceCapture("slot_notification.protected", window_, !IsWindowVisible(window_), false);
-  // ShowWindow's return value is PREVIOUS visibility, not an error indicator.
-  paint_ok_ = true;
-  ShowWindow(window_, SW_SHOWNOACTIVATE);
-  if (!paint_ok_) return; // A synchronous WM_PAINT already reported its exact failure.
-  if (!IsWindowVisible(window_)) {
-    SlotSurfaceError failure;
-    failure.HResult("VerifyVisibility(after SW_SHOWNOACTIVATE)", E_FAIL);
-    NativeFailed(failure);
-    return;
-  }
-  if (!Repaint()) return;
+  TraceCapture("slot_notification.frame_ready", window_, hidden_, parking_.parked());
+  if (!Present()) return;
   lifetime_.Restart(GetTickCount64());
   if (!SetTimer(window_, kHideTimer, SlotNotificationLifetime::kDurationMs, nullptr)) {
     const DWORD error = GetLastError();
@@ -365,15 +397,29 @@ void SlotNotification::SelectionChanged(int64_t id, const std::wstring& name, bo
 
 void SlotNotification::Dismiss() {
   lifetime_.Dismiss();
+  Conceal();
+}
+
+void SlotNotification::Conceal() {
+  hidden_ = true;
   if (window_) {
     KillTimer(window_, kHideTimer);
-    const bool visible = IsWindowVisible(window_) != FALSE;
-    ShowWindow(window_, SW_HIDE);
-    if (visible) TraceCapture("slot_notification.hide", window_, true, false);
+    if (parking_.parked() || !IsWindowVisible(window_)) return;
+    if (UseStableCaptureSurface() && parking_.Park(window_)) {
+      TraceCapture("slot_notification.hide.parked", window_, true, true);
+    } else {
+      if (UseStableCaptureSurface()) {
+        TraceCaptureApi("CaptureWindowParking::Park(hide)", window_, false, ERROR_SUCCESS, E_FAIL);
+      }
+      ShowWindow(window_, SW_HIDE); // Fail closed if parking cannot be performed.
+      TraceCapture("slot_notification.hide.native", window_, true, false);
+    }
+    FlushHiddenWindowComposition(); // Same compositor barrier as main-window Hide.
   }
 }
 
 void SlotNotification::SavePosition() {
+  if (hidden_ || parking_.parked()) return;
   RECT rect{};
   if (!GetWindowRect(window_, &rect)) return;
   const HMONITOR monitor = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
@@ -390,14 +436,14 @@ void SlotNotification::SavePosition() {
 }
 
 void SlotNotification::RefreshPosition() {
-  if (!window_ || !IsWindowVisible(window_)) return;
+  if (!window_ || hidden_ || parking_.parked()) return;
   RECT rect{};
   if (!GetWindowRect(window_, &rect)) return;
   const HMONITOR monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONULL);
   POINT point{rect.left, rect.top};
   if (!Render(monitor ? monitor : PrimaryMonitor(), monitor ? &point : nullptr)) {
     NativeFailed(native_error_);
-  } else Repaint();
+  } else Present();
 }
 
 LRESULT CALLBACK SlotNotification::WndProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
@@ -426,6 +472,7 @@ LRESULT CALLBACK SlotNotification::WndProc(HWND window, UINT message, WPARAM wp,
       }
       self->window_ = nullptr;
       self->affinity_applied_ = false;
+      self->composition_ready_ = false;
       return DefWindowProcW(window, message, wp, lp);
     }
     return self->HandleMessage(message, wp, lp);
@@ -435,10 +482,6 @@ LRESULT CALLBACK SlotNotification::WndProc(HWND window, UINT message, WPARAM wp,
 
 LRESULT SlotNotification::HandleMessage(UINT message, WPARAM wp, LPARAM lp) {
   switch (message) {
-    case kRefreshSurface:
-      refresh_pending_ = false;
-      RefreshPosition();
-      return 0;
     case WM_NCCALCSIZE: return 0;
     case WM_NCPAINT: return 0;
     case WM_ERASEBKGND: return 1; // WM_PAINT copies all premultiplied pixels, including alpha-zero.
@@ -451,12 +494,15 @@ LRESULT SlotNotification::HandleMessage(UINT message, WPARAM wp, LPARAM lp) {
         SlotSurfaceError failure;
         failure.Win32("BeginPaint", error);
         paint_ok_ = false;
+        if (rendering_) render_message_failed_ = true;
         NativeFailed(failure);
         return 0;
       }
       SlotSurfaceError failure;
       bool okay = true;
-      if (!surface_.empty()) {
+      // User32 may send WM_PAINT inside SetWindowPos/SetWindowRgn. No private
+      // pixels may be copied until the resulting surface has been protected.
+      if (!rendering_ && !surface_.empty()) {
         okay = Protect();
         if (!okay) failure = native_error_;
         else okay = surface_.Paint(dc, &failure);
@@ -497,7 +543,11 @@ LRESULT SlotNotification::HandleMessage(UINT message, WPARAM wp, LPARAM lp) {
     case WM_WINDOWPOSCHANGING: {
       auto* position = reinterpret_cast<WINDOWPOS*>(lp);
       position->flags |= SWP_NOACTIVATE;
-      if (IsWindowVisible(window_) && !(position->flags & SWP_NOMOVE)) {
+      if (parking_.parked()) {
+        parking_.ConstrainPosition(position);
+        break; // Never clamp parking coordinates back onto a monitor.
+      }
+      if (!hidden_ && !(position->flags & SWP_NOMOVE)) {
         RECT current{};
         GetWindowRect(window_, &current);
         const int width = position->flags & SWP_NOSIZE ? current.right - current.left : position->cx;
@@ -512,40 +562,39 @@ LRESULT SlotNotification::HandleMessage(UINT message, WPARAM wp, LPARAM lp) {
       break;
     }
     case WM_DPICHANGED: {
-      if (!IsWindowVisible(window_)) break;
-      // SetWindowPos can synchronously report a DPI change. Finish the current
-      // frame first; refresh once via the event queue, never recursively replace
-      // the bitmap/region while SetFrame still owns its local GDI resources.
-      if (rendering_) {
-        if (!refresh_pending_) {
-          if (!PostMessageW(window_, kRefreshSurface, 0, 0)) {
-            native_error_.Win32("PostMessageW(DPI refresh)", GetLastError());
-            render_message_failed_ = true;
-          } else refresh_pending_ = true;
-        }
-        return 0;
-      }
+      // Render already calculated DPI from the intended on-screen monitor.
+      // Ignore notifications caused by our own off-screen park/restore/frame
+      // operations, or mixed-DPI monitors could enqueue endless refresh cycles.
+      if (rendering_ || hidden_ || parking_.parked()) return 0;
       const RECT suggested = *reinterpret_cast<RECT*>(lp);
       const POINT point{suggested.left, suggested.top};
       if (!Render(MonitorFromRect(&suggested, MONITOR_DEFAULTTONEAREST), &point)) {
         NativeFailed(native_error_);
-      } else Repaint();
+      } else Present();
       return 0;
     }
-    case WM_DISPLAYCHANGE: RefreshPosition(); return 0;
+    case WM_DISPLAYCHANGE:
+      if (parking_.parked()) parking_.Repark(window_);
+      else RefreshPosition();
+      return 0;
     case WM_SETTINGCHANGE:
       if (wp == SPI_SETWORKAREA) RefreshPosition();
       break;
     case WM_DWMCOMPOSITIONCHANGED: {
-      const bool visible = IsWindowVisible(window_) != FALSE;
+      const bool visible = !hidden_;
+      Conceal(); // Preserve the Win10 surface; never resurrect an expired overlay.
       affinity_applied_ = false;
       affinity_readback_noted_ = false;
-      ShowWindow(window_, SW_HIDE); // Revalidate composition while no text is visible.
-      if (!SlotNotificationSurface::Configure(window_, &native_error_)) NativeFailed(native_error_);
-      else if (!Protect(true)) ProtectionFailed();
+      composition_ready_ = false;
+      if (!Protect(true)) ProtectionFailed();
       else if (visible && !lifetime_.ShouldHide(GetTickCount64())) {
-        ShowWindow(window_, SW_SHOWNOACTIVATE);
-        Repaint();
+        if (Present()) {
+          const UINT remaining = lifetime_.Remaining(GetTickCount64());
+          if (remaining && !SetTimer(window_, kHideTimer, remaining, nullptr)) {
+            native_error_.Win32("SetTimer(DWM restore)", GetLastError());
+            NativeFailed(native_error_);
+          }
+        }
       } else Dismiss();
       return 0;
     }

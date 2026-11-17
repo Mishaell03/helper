@@ -60,7 +60,7 @@ void InitializeCaptureDiagnostics(bool enabled) {
   trace.open(directory / name, std::ios::out | std::ios::trunc);
   if (!trace) return;
   const auto version = WindowsVersion();
-  trace << "Helper capture diagnostics v4; app=" << FLUTTER_VERSION
+  trace << "Helper capture diagnostics v5; app=" << FLUTTER_VERSION
         << "; windows_version=" << version.dwMajorVersion << '.' << version.dwMinorVersion
         << "; windows_build=" << CaptureWindowsBuild()
         << "; stable_surface=" << UseStableCaptureSurface()
